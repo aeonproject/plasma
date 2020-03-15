@@ -1,0 +1,403 @@
+<html>
+	<head>
+  		<link href="css/shCore.css" rel="stylesheet" type="text/css" />
+  		<link href="css/shThemeDefault.css" rel="stylesheet" type="text/css" />
+      <title>PLASMA Programming Language</title>
+	</head>
+
+	<body>
+		<h1>PLASMA Programming Language</h1>
+		<p>
+      PLASMA is a declerative programming languages. Programmers can define elasticity rules for an AEON applications.
+		 	Here we would like to introduce the usage of PLASMA programming language. 
+     </p>
+
+		<h2>Programming Model</h2>
+		<p>
+      A PLASMA program consists of multiple independent elasticity rules. A single elasticity rule includes two parts:
+      (i) condition(s); and (ii) elasticity behaviors. The runtime will execute the elasticity behaviors when the condition(s) are satisfied.
+		</p>	
+
+    <h3>Programming Language Syntax</h3>
+    <p><img src="images/syntax.jpg" class="thumbnail" alt="plasma-syntax" height="600" width="300" /></p>
+		
+		<!-- <h2>Programming syntax</h2>
+		<p>AEON programming syntax just extends the syntax of C++. So it's easy for programmers to master AEON if they are familiar with C++.</p>
+
+		<h3>contextclass and context</h3>
+		<p><b>contextclass</b> in AEON is similar to <b>class</b> in C++, while <b>context</b> in AEON is similar to <b>object</b> in C++. 	
+			Porgrammers need to define contextclasses and create instances (contexts) during runtime. The definition of contextclass is exact the 
+			same as class in C++. Check the following example:  
+		</p>
+		<pre class='brush: cpp'>
+  			contextclass SampleContext {
+  				int id;
+  				string name;
+
+  				void setID(int newId);
+  				void setName(string newName);
+  			}
+  		</pre>
+		
+		<p>However, there are still many differences between contextclass/context and class/object. The context in AEON are more like a reference
+			(which is similar to JAVA). And programmers need to use a special API to create contexts from contextclass:
+		</p>
+
+		<pre class='brush: cpp'>
+  			SampleContext sampleA = createContextObject("SampleClass");
+  			SampleContext sampleB = createContextObject("SampleClass");
+
+  			simpleA.setID(1);
+  			simpleB.setName("B");
+  		</pre>
+
+  		<p>In the codes above, you have created two contexts in one piece of codes. Please pay attention here, the runtime may put them on 
+  			different servers. 
+  			But the programmers needn't care about this problem. They could invoke their member funtions directly. If those contexts
+  			are on remote servers, the runtime will handle them.
+  		</p>
+
+  		<p>In many scenarioes, the programmers would like to refer a context directly. So we also have another way for programmers to refer
+  			a context:
+  		</p>
+
+  		<pre class='brush: cpp'>
+  			SampleContext sampleB = getContextObject("SampleClass", id);
+  			
+  			simpleB.setName("new B");
+  		</pre>
+  		<p>Each context has an unique id. The runtime will return the context according to a given id. If there is no context can be mapped to the 	
+  			given id, the runtime will create a new context and take the given id as its unique id.
+  		</p>
+
+  		<h3>Ownership</h3>
+  		<p>In order to preserve strong consistency and deadlock-freedom, we have introduce ownership into AEON. 
+  			All contexts in the application will form a DAG structure during runtime. Fortunately, the ownership are implicit to programmers.
+  			Programmers only need to follow several simple rules to construct the ownership.
+  		</p>
+
+  		<p>Here we start from a simple example: University, Department and Student. Within one university, there are many departments. And each
+  			department will have hundreds of students. At the same time, one student may belong to more than one department.
+  		</p>
+
+  		<pre class='brush: cpp'>
+  			contextclass Student {
+  				...
+  			} 
+
+  			contextclass Department {
+  				vector<Student> students;
+  				...
+  			}
+
+  			contextclass University {
+  				vector<Department> departments;
+  			}
+  		</pre>
+
+  		<p>In the contextclass definition, if context C is the member variable of context B, then B is the owner of C. 
+  			In the piece of codes above, the Department context is the owner of Student contexts which belong to this Department. 
+  			Here one Student may be the member variable of two Department contexts.
+  		</p>
+
+  		<p>One problem the programmers should avoid in ownership is cycle. As the example above, if University is the owner of Department which Department is the owner of Student. Then Student contextclass shouldn't have a member variable typed University or Department. 
+  		</p>
+
+  		<p>The above approach could prevent cycle in ownership. But it limits the generalty of AEON. For example, it's impossible 
+  			to implement some iterative applications like binary tree. To solve this problem, we relax this constrants a little. 
+  			And to allow one contextclass has member variables typed itself. We have binary tree example:
+  		</p>	
+
+  		<pre class='brush: cpp'>
+  			contextclass BinaryTreeNode {
+  				int key;
+  				BinaryTreeNode left_node;
+  				BinaryTreeNode right_node;
+
+          void insertKey( int k );
+  			} 
+  		</pre>
+
+      <h3>Functions invocation mode</h3>
+      <p>As shown in the above sample codes, the definition of contextclass member functions are similar to C++. 
+          But it's different to invoke those functions in AEON. AEON supports three different types of function invocation mode:
+          event, async and sync.
+      </p>
+
+      <h4>Event:</h4>
+      <pre class='brush: cpp'>
+        // when to receive the request from client side
+        BinaryTreeNode root = getContextObject("BinaryTreeNode", rootId);
+        event root.insertKey( k );
+      </pre>
+
+      <p>Event functions play the role of interface to clients. 
+        The application would treat each event function invocation as a request from a client. 
+        In the sample code, the client wants to insert a new key into the binary tree. So it passes a request to sever.
+        Then it will triger the invocation of function "insertKey" of root context as event mode. From the root context, 
+        the application to search the right place to put the new key. 
+      </p>
+
+      <p>For this binary tree, clients would launch requests at the same time. So there are concurrent events being processed in parallel. 
+        For example, it's possible one client wants to insert a new key while the other client wants to delete another key. They may interfare
+        each other. Fortunately, programmers needn't worry about this problem. As we claimed, AEON runtime will handle such case and provide 
+        strong consistency for events execution.
+      </p>
+
+      <h4>Async and sync:</h4>
+      <p>As we introduce above, events present requests from clients. However, one request may involve multiple contexts.
+        For example, it should traverse the binary tree before it finds the right node to insert the new key.
+        Unlike other actor systems, there are constraints on interaction between contexts. 
+        In AEON, one context could only access its child contexts via sync or aysnc mode. In the binary tree example, one node context could access
+        its left_node and right_node contexts.
+      </p>
+
+      <pre class='brush: cpp'>
+        // sync mode
+        left_node.insertKey(k1);
+        right_node.insertKey(k2);
+
+        // async mode
+        async left_node.insertKey(k1);
+        async right_node.insertKey(k2);
+      </pre>
+
+      <p>The funtionarity are quite similar for sync and async mode. async is used to introduce more parallel execution for better performance.
+        Above sample codes shows one context wants insert k1 to its left subtree and k2 to its right subtree. 
+        If programmers use sync mode, the two invocation will be executed one by one. 
+        But for async mode, the two invocation will execute in parallel. For this case, the results are the same. 
+      </p>
+
+      <p>However, async may introduce undeterminitic execution within one event. Programmers should be careful when to use it
+        for better performance. And async mode doesn't support return value. It could only be applied on functions with void as 
+        return type.
+      </p>
+
+      <h3>Client and server communication</h3>
+      <p>AEON is also an extension of Mace. So here it makes use the deliver and downcall_route APIs from Mace, which should be 
+        convenient for programmers' usage. Programmers need to define messages structure:
+      </p>
+
+      <pre class='brush: cpp'>
+        message SearchKey {
+          int key;
+        };
+      </pre>
+
+      <p>Then the upcall and downcall: </p>
+      <pre class='brush: cpp'>
+        // client passes SearchKey message to server
+        downcall_route(server_addr, SearchKey(k) );
+
+        // when server receives the SearchKey message.
+        upcall deliver( const MaceKey& dest, const MaceKey& src, const SearchKey& msg ){
+          ...
+        }
+      </pre>
+
+
+      <h3>Complete Example: binary tree server</h3>
+
+      <pre class='brush: cpp'>
+        #include "stdlib.h"
+
+        service BinaryTreeServer;
+        provides NULL;
+
+        message SearchKey {
+          uint32_t clientId;
+          int key;
+        };
+
+        message InsertKey {
+          uint32_t clientId;
+          int key;
+          int value;
+        };
+
+        message Reply {
+          uint32_t clientId;
+          bool succ;
+          int ret;
+        };
+        
+        contextclass TreeNode {
+          int key;
+          int value;
+          TreeNode left;
+          TreeNode right;
+
+          void setKey( const int& key, const int& );
+          void searchKey(const int& key, const MaceKey& src);
+          void insertKey(const int& key);
+        };
+
+        contextclass RootNode {
+          TreeNode root;
+
+          void searchKey(const int& key, const MaceKey& src);
+          void insertKey(const int& key);
+        };
+
+
+        upcall deliver( const MaceKey& dest, const MaceKey& src, const SearchKey& msg ){
+          RootNode root = getContextObject("RootNode", 0);
+          event root.searchKey( msg.key, src );
+        }
+
+        upcall deliver( const MaceKey& dest, const MaceKey& src, const InsertKey& msg ){
+          RootNode root = getContextObject("RootNode", 0);
+          event root.insertKey( msg.key );
+        }
+
+        void RootNode::searchKey(const uint32_t& clientId, const int& key, const MaceKey& src){
+          if( root == NULL ){
+            downcall_route(src, Reply(clientId, False) );
+          }else {
+            async root.searchKey(clientId, key, src);
+          }
+        }
+
+        void RootNode::insertKey(const uint32_t& clientId, const int& key, const int& value, const MaceKey& src) {
+          if( root == NULL ){
+            root = createNewContext("TreeNode");
+            root.set(key, value);
+            downcall_route( src, Reply(clientId, True) );
+          }else {
+            async root.insertKey(clientId, key);
+          }
+        }
+
+        void TreeNode::searchKey(const int& k, const MaceKey& src){
+          if( k == key ){
+            downcall_route(src, Reply(True) );
+          } else if( k < key ){
+            if( left == NULL ){
+              downcall_route(src, Reply(False) );
+            } else {
+              async left.searchKey( k, src );
+            }
+          } else {
+            if( right == NULL ){
+              downcall_route(src, Reply(False) );
+            } else {
+              async right.searchKey( k, src );
+            }
+          }
+        }
+
+        void TreeNode::insertKey(const int& k){
+          if( k == key ){
+            return;
+          } else if( k < key ){
+            if( left == NULL ){
+              left = createNewContext("TreeNode");
+              left.set(k);
+            } else {
+              async left.insertKey( k );
+            }
+          } else {
+            if( right == NULL ){
+              right = createNewContext("TreeNode");
+              right.set(k);
+            } else {
+              async right.insertKey( k );
+            }
+          }
+        }
+
+        void TreeNode::set(const int& k ){
+          key = k;
+        }
+
+        downcall maceInit() {
+
+        }
+
+      </pre>
+
+      <h3>Complete Example: binary tree client</h3>
+
+      <pre class='brush: cpp'>
+        #include <random>
+        
+        service BinaryTreeClient;
+        provides NULL;
+
+        constants {
+          uint8_t INSERT_OP = 1;
+          uint8_t SEARCH_OP = 2;
+        }
+
+        constructor_parameters {
+          NodeSet serverNodes = NodeSet();
+
+          uint32_t N_CLIENT = 4;
+        }
+
+        message SearchKey {
+          uint32_t clientId;
+          int key;
+        };
+
+        message InsertKey {
+          uint32_t clientId;
+          int key;
+          int value;
+        };
+
+        message Reply {
+          uint32_t clientId;
+          bool ret;
+        };
+        
+        contextclass Client {
+          uint32_t clientId;
+          
+          void initClient( const uint32_t& id, const MaceKey& severAddr );
+          void launchRequest(const MaceKey& severAddr);
+        };
+
+        
+        upcall deliver( const MaceKey& dest, const MaceKey& src, const Reply& msg ){
+          Client client = getContextObject("Client", msg.clientId);
+          event client.lauchRequest( src );
+        }
+
+        
+        void Client::launchRequest( const MaceKey& serverAddr ){
+          uint8_t op = (uint8_t) rand() % 2 + 1;
+          int key = rand() % 10000;
+
+
+          if( op == INSERT_OP ){
+            downcall_route( serverAddr, InsertKey(clientId, key, 100) );
+          } else {
+            downcall_route( serverAddr, SearchKey(clientId, key) );
+          }
+        }
+
+        void Client::initClient(const uint32_t& id, const MaceKey& severAddr) {
+          clientId = id;
+          this->launchRequest(serverAddr);
+        }
+
+        downcall maceInit() {
+          srand( mace::getmtime() );
+          for( uint32_t i=1; i<=N_CLIENT; i++ ){
+            Client client = getContextObject("Client", i);
+            event client.initClient( i, *(serverNodes.begin()) );
+          }
+        }
+
+      </pre> -->
+
+
+		<script src="js/shCore.js"></script>
+  		<script src="js/shBrushCpp.js"></script>
+  		<script>
+    		SyntaxHighlighter.all()
+  		</script>
+	</body>
+</html>
+
