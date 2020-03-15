@@ -19,7 +19,17 @@
 		</p>	
 
     <h3>Programming Language Syntax</h3>
-    <p><img src="images/syntax.jpg" class="thumbnail" alt="plasma-syntax" height="600" width="300" /></p>
+    <p><img src="images/syntax.jpg" class="thumbnail" alt="plasma-syntax" height="600" width="400" /></p>
+
+    <h3>Conditions</h3>
+    <p>
+      There are three types of conditions in the elasticity rules: 
+      <ol>
+        <li>Resource usage of servers: e.g., <code>server.cpu > 80</code></li>
+        <li>Message count of actors: e.g., <code>Actor1(a).call(Actor2(b)).count > 1000</code></li>
+        <li>Semantics relationship between actors: <code>Actor1(a) in ref(Actor2(b).children)</code></li>
+      </ol>
+    </p>
 		
 		<!-- <h2>Programming syntax</h2>
 		<p>AEON programming syntax just extends the syntax of C++. So it's easy for programmers to master AEON if they are familiar with C++.</p>
