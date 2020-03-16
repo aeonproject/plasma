@@ -27,7 +27,19 @@
       <ol>
         <li>Resource usage of servers: e.g., <code>server.cpu > 80</code></li>
         <li>Message count of actors: e.g., <code>Actor1(a).call(Actor2(b)).count > 1000</code></li>
-        <li>Semantics relationship between actors: <code>Actor1(a) in ref(Actor2(b).children)</code></li>
+        <li>Semantics relationship between actors: e.g., <code>Actor1(a) in ref(Actor2(b).children)</code></li>
+      </ol>
+    </p>
+
+    <h3>Behaviors</h3>
+    <p>
+      There are five types of behaviors in the elasticity rules: 
+      <ol>
+        <li>balance: prompts the runtime to balance the workload on each server by migrating actors of given types from overloaded servers to ones with idle resources.</li>
+        <li>reserve: instructs the runtime to keep those actors on dedicated servers exclusively, whose resources are sufficient to meet the actors’ demands.</code></li>
+        <li>colocate: tells the runtime to keep the concerned actors on the same server.</li>
+        <li>separate: instructs the runtime to keep the actors of the two types separated.</li>
+        <li>pin: indicates that particular actors should not be moved.</li>
       </ol>
     </p>
 		
