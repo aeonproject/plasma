@@ -28,15 +28,20 @@
     <h3>Pull image and run container</h3>
     <p>
       <code>docker pull samplise/aeon:1.0</code>
+      
       <code>docker run --rm -it -v /path-to-plasma-src/src/mace-peca:/plasma -w /plasma samplise/aeon:1.0 bash</code>
     </p>
 
     <h3>Compiler Metadata Server in Container</h3>
     <p>
       <code>mkdir builds</code>
+
       <code>cd builds</code>
+
       <code>cmake ..</code>
+
       <code>make mace</code>
+
       <code>make contextrun</code>
     </p>
 
