@@ -1,0 +1,54 @@
+<html>
+	<head>
+  		<link href="css/shCore.css" rel="stylesheet" type="text/css" />
+  		<link href="css/shThemeDefault.css" rel="stylesheet" type="text/css" />
+      <title>Demo: Metadata Server</title>
+	</head>
+
+	<body>
+		<h1>Demo: Metadata Server</h1>
+		<p>
+      Please follow the following instruction to run the demo and be familiar with PLASMA. 
+     </p>
+
+		<h2>Required softwares</h2>
+    <p>
+      Please intall the following required softwares: 
+      <ol>
+        <li>git</li>
+        <li>docker</code></li>
+      </ol>
+    </p>
+
+    <h2>Run demo</h2>
+
+    <h3>Download source codes</h3>
+		<p><code>git clone https://github.com/aeonproject/plasma.git</code></p>	
+
+    <h3>Pull image and run container</h3>
+    <p>
+      <code>
+        docker pull samplise/aeon:1.0
+        docker run --rm -it -v /path-to-plasma-src/src/mace-peca:/plasma -w /plasma samplise/aeon:1.0 bash 
+      </code>
+    </p>
+
+    <h3>Compiler Metadata Server in Container</h3>
+    <p>
+      <code>
+        mkdir builds
+        cd builds
+        cmake ..
+        make mace
+        make contextrun
+      </code>
+    </p>
+
+    <script src="js/shCore.js"></script>
+  		<script src="js/shBrushCpp.js"></script>
+  		<script>
+    		SyntaxHighlighter.all()
+  		</script>
+	</body>
+</html>
+
