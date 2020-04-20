@@ -1,0 +1,315 @@
+
+#include <stdlib.h>
+#include "Util.h"
+
+service HaloPresenceServer;
+provides Null;
+
+typedefs {
+
+}
+
+services {
+  Transport t;
+}
+
+constants {
+  uint8_t LIGHT_ROUTER_WORKLOAD = 0;
+  uint8_t HEAVY_ROUTER_WORKLOAD = 1;  
+}
+
+constructor_parameters {
+  uint32_t N_PLAYER_PER_ROUTER = 10;
+  uint32_t N_GAME_SESSION = 10;
+
+  uint64_t LIGHT_OUTER_LOOP = 1;
+  uint64_t LIGHT_INNER_LOOP = 10;
+      
+  uint64_t HEAVY_OUTER_LOOP = 100;
+  uint64_t HEAVY_INNER_LOOP = 10000;
+
+  uint8_t ROUTER_WORKLOAD_TYPE = 0;
+
+  uint64_t ROUTER_N_OUTPUT = 500;
+  uint64_t GAMESESSION_N_OUTPUT = 1000;
+  uint64_t PLAYER_N_OUTPUT = 100;
+
+  uint64_t HEARTBEAT_TIMES = 1;
+
+  uint32_t N_ROUTER = 8;
+}
+
+#minclude "HaloPresenceMessages.mi"
+
+auto_types {
+  
+}
+ 
+state_variables {
+  context Controller {
+    mace::map<uint32_t, uint32_t> clientPlayerMap;
+
+    mace::map<uint32_t, uint32_t> playerSessionMap;
+
+    uint32_t nActiveRouters;
+    uint32_t nRouters;
+
+    uint32_t nActivePlayers;
+    uint32_t nPlayers;
+
+    uint32_t nextGSId;
+  }
+
+  context Router<uint32_t rId> {
+    bool isActive;
+    uint64_t heartbeat;
+  }
+
+  context GameSession<uint32_t gId> {
+    mace::set<uint32_t> playerIds;
+    uint64_t heartbeat;
+  }
+
+  context Player<uint32_t pId> {
+    uint64_t heartbeat;
+    uint32_t gsId;
+  }
+
+}
+
+
+ 
+transitions {
+  downcall maceInit()  {
+    ADD_SELECTORS("HaloPresenceServer");
+    RandomUtil::seedRandom( mace::getmtime() );
+    maceout << "Start HaloPresenceServer!" << Log::endl;
+    async_initController();
+  }
+
+  async [Controller] initController() [ locking = ownership ] {
+    ADD_SELECTORS("HaloPresenceServer");
+    maceout<< "Initialize controller!" << Log::endl;
+
+    nActivePlayers = 0;
+    nPlayers = 0;
+    
+    nActiveRouters = N_ROUTER;
+    nRouters = N_ROUTER;
+
+    nextGSId = 1;
+
+    for( uint32_t i=1; i<=N_GAME_SESSION; i++ ){
+      mace::string s_ctx_name = Util::generateContextName("GameSession", i);
+      createNewOwnership( "Controller", s_ctx_name );
+      async_initGameSession( i );
+    }
+
+    for( uint32_t i=1; i<=N_ROUTER; i++ ) {
+      mace::string r_ctx_name = Util::generateContextName("Router", i);
+      createNewOwnership( "Controller", r_ctx_name );
+    }
+
+    for( uint32_t i=1; i<=N_ROUTER; i++ ) {
+      initRouter( i );
+    }
+  }
+
+  async [GameSession<sId>] initGameSession( const uint32_t& sId ) {
+    ADD_SELECTORS("HaloPresenceServer");
+    maceout << "Initialize GameSession["<< sId <<"]!" << Log::endl;
+  }
+
+  upcall [Controller] deliver(const MaceKey& src, const MaceKey& dest, const Join& msg ) {
+    ADD_SELECTORS("HaloPresenceServer");
+
+    async_playerJoin( src, msg );
+  }
+
+
+  async [Controller] playerJoin( const MaceKey& src, const Join& msg ) [ locking=ownership ] {
+    ADD_SELECTORS("HaloPresenceServer");
+
+    uint32_t pId = 0;
+    uint32_t gId = 0;
+
+    bool new_client_flag = false;
+
+    if( clientPlayerMap.find(msg.global_clientId) == clientPlayerMap.end() ) {
+      pId = ++ nPlayers;
+      // gId = RandomUtil::randInt() % N_GAME_SESSION + 1;
+      gId = nextGSId;
+
+      nextGSId = ( nextGSId+1 ) % ( N_GAME_SESSION+1);
+      if( nextGSId == 0 ){
+        nextGSId = 1;
+      }
+
+      clientPlayerMap[ msg.global_clientId ] = pId;
+      playerSessionMap[ pId ] = gId;
+      new_client_flag = true;
+    } else {
+      pId = clientPlayerMap[ msg.global_clientId ];
+      gId = playerSessionMap[ pId ];
+    }
+
+    nActivePlayers ++;
+
+    maceout << "Client["<< msg.global_clientId <<"] is assigned Player["<< pId <<"] in GameSession["<< gId <<"]. Current active nPlayers="<< nActivePlayers << Log::endl;
+
+    uint32_t n_player = nActivePlayers;
+
+    if( n_player > N_PLAYER_PER_ROUTER * nActiveRouters ) { // it requires more Router actors to process heartbeat message
+      while( n_player > N_PLAYER_PER_ROUTER * nActiveRouters && nActiveRouters < nRouters ) {
+        nActiveRouters ++;
+        setRouterActiveFlag( nActiveRouters, true );
+      }
+
+      if( n_player > N_PLAYER_PER_ROUTER * nActiveRouters ) {
+        ASSERT( nActiveRouters == nRouters );
+
+        while( n_player > N_PLAYER_PER_ROUTER * nActiveRouters ) {
+          nActiveRouters ++;
+          nRouters ++;
+
+          mace::string r_ctx_name = Util::generateContextName("Router", nRouters);
+          createNewOwnership( "Controller", r_ctx_name );
+          initRouter( nRouters );
+        }
+      }
+      
+    }
+
+    if( new_client_flag ) {
+      async_initPlayerInGameSession( nActiveRouters, gId, pId, msg.clientId, src );
+    } else {
+      downcall_route( src, JoinReply( msg.clientId, nActiveRouters, gId, pId) );
+    }
+  }
+
+  
+
+  async [GameSession<gsId>] initPlayerInGameSession( const uint32_t& n_act_router, const uint32_t& gsId, const uint32_t& pId, const uint32_t& clientId, 
+      const MaceKey& src ) [ locking=ownership ] {
+    ADD_SELECTORS("HaloPresenceServer");
+
+    playerIds.insert( pId );
+
+    mace::string s_ctx_name = Util::generateContextName("GameSession", gsId);
+    mace::string p_ctx_name = Util::generateContextName("Player", pId);
+    createNewOwnership( s_ctx_name, p_ctx_name );
+    initPlayer(pId, gsId);
+
+    downcall_route( src, JoinReply(clientId, n_act_router, gsId, pId) );
+  }
+
+  upcall [Controller] deliver(const MaceKey& src, const MaceKey& dest, const ConnectionRequest& msg ) {
+    ADD_SELECTORS("HaloPresenceServer");
+    std::ostringstream oss;
+    oss << src <<"["<<msg.clientId<<"]";
+
+    MaceAddr commAddr = getExternalCommContextAddr( src, oss.str() );
+    maceout << "commAddr=" << commAddr << Log::endl;
+    MaceKey commKey( ipv4, commAddr );
+    downcall_route( src, ConnectionSetup(commKey, msg.clientId) );
+    maceout<< "Assign external communication node("<< commKey <<") to client("<< msg.clientId <<") from " << src << Log::endl;
+  }
+
+  upcall [Controller] deliver(const MaceKey& src, const MaceKey& dest, const Leave& msg ) {
+    ADD_SELECTORS("HaloPresenceServer");
+    
+    nActivePlayers --;
+    if( nActivePlayers <= (nActiveRouters-1) * N_PLAYER_PER_ROUTER ) {
+      nActiveRouters --;
+    }
+  }
+
+  upcall [Router<msg.routerId>] deliver(const MaceKey& src, const MaceKey& dest, const Heartbeat& msg ) {
+    ADD_SELECTORS("HaloPresenceServer");
+    if( !isActive ) {
+      downcall_route( src, HeartbeatReply( msg.clientId, false ) );
+      return;
+    }
+
+    heartbeat ++;
+
+    if( ROUTER_N_OUTPUT > 0 && heartbeat % ROUTER_N_OUTPUT == 0 ) {
+      maceout <<"Router("<< msg.routerId <<") heartbeat=" << heartbeat << Log::endl;
+    }
+
+    doComputation();
+    async_gameSessionHeartbeat( msg.sessionId, msg.playerId, msg.clientId, src );
+  }
+
+  async [GameSession<gId>] gameSessionHeartbeat( const uint32_t& gId, const uint32_t& pId, const uint32_t& cId, const MaceKey& src ) {
+    ADD_SELECTORS("HaloPresenceServer");
+
+    heartbeat ++;
+    if( GAMESESSION_N_OUTPUT > 0 && heartbeat % GAMESESSION_N_OUTPUT == 0 ) {
+      maceout << "GameSession("<< gId <<") heartbeat=" << heartbeat << Log::endl;
+    }
+
+    for( uint64_t i=0; i<HEARTBEAT_TIMES; i++ ) {
+      playerHeartbeat( pId );
+    }
+    downcall_route( src, HeartbeatReply(cId, true) );
+  }
+
+  upcall [Controller] deliver(const MaceKey& src, const MaceKey& dest, const UpdateRouterInfo& msg ) {
+    ADD_SELECTORS("HaloPresenceServer");
+    downcall_route( src, UpdateRouterInfoReply(msg.clientId, nActiveRouters) );
+  }
+}
+
+routines {
+  [Player<pId>] void initPlayer( const uint32_t& pId, const uint32_t& gs_id ) {
+    ADD_SELECTORS("HaloPresenceServer");
+
+    gsId = gs_id;
+    maceout << "Initialize Player("<< pId <<") in GameSession("<< gs_id <<") !" << Log::endl;
+    heartbeat = 0;
+  }
+
+  [Router<rId>] void setRouterActiveFlag( const uint32_t& rId, const bool& flag ) {
+    ADD_SELECTORS( "HaloPresenceServer" );
+    maceout << "To set Router["<< rId <<"] active flag: " << flag << Log::endl;
+    isActive = flag;
+  }
+
+  [Router<rId>] void initRouter( const uint32_t& rId ) {
+    ADD_SELECTORS( "HaloPresenceServer" );
+    maceout << "To initialize Router["<< rId <<"]!" << Log::endl;
+    isActive = true;
+    heartbeat = 0;
+  }
+
+  [Player<pId>] void playerHeartbeat( const uint32_t& pId ) {
+    ADD_SELECTORS( "HaloPresenceServer" );
+    heartbeat ++;
+
+    if( PLAYER_N_OUTPUT > 0 && heartbeat % PLAYER_N_OUTPUT == 0 ) {
+      maceout << "Player("<< pId <<") heartbeat=" << heartbeat << Log::endl;
+    }
+  }
+
+  [__null] void doComputation() {
+    uint64_t m = 0;
+
+    uint64_t outer_loop = HEAVY_OUTER_LOOP;
+    uint64_t inner_loop = HEAVY_INNER_LOOP;
+
+    if( ROUTER_WORKLOAD_TYPE == LIGHT_ROUTER_WORKLOAD ) {
+      outer_loop = LIGHT_OUTER_LOOP;
+      inner_loop = LIGHT_INNER_LOOP;
+    }
+    
+    for( uint32_t i=0; i<outer_loop; i++ ){
+      m = RandomUtil::randInt(i);
+      for( uint32_t j=0; j<inner_loop; j++ ){
+        m ++;
+      }
+    }
+  }
+
+}
+

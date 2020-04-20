@@ -1,0 +1,489 @@
+#include <random>
+
+
+service MediaServiceClient;
+
+provides Null;
+
+services {
+  Transport t;
+}
+
+constants {
+  uint16_t TYPE_RENT_MOVIE = 1;
+  uint16_t TYPE_REVIEW_MOVIE = 2;
+}
+
+constructor_parameters {
+  NodeSet MediaServiceServer = NodeSet(); /* Should be only one node */
+  uint64_t OUTPUT_COUNT = 100;
+  uint32_t N_CLIENTS = 1;
+
+  uint16_t RENT_MOVIE_PERCENT = 50;
+
+  uint64_t RENT_OUTPUT_COUNT = 100;
+  uint64_t REVIEW_OUTPUT_COUNT = 100;
+
+  uint32_t WARMUP_PERIOD = 20;
+  uint32_t DAY_PERIOD = 600;
+  uint32_t DAY_STABLE_PERIOD = 240;
+
+  double DAY_JOIN = 0.2;
+  double DAY_LEAVE = 0.5;
+  double DAY_ERROR = 0.15;
+}
+
+typedefs {
+  
+}
+
+#minclude "MediaServiceMessages.mi"
+
+auto_types {
+  
+}
+
+state_variables {
+   
+  context Client<uint32_t clientId> {
+    bool isActive;
+
+    uint32_t userID;
+    uint16_t requestType;
+    
+    uint32_t feID;
+    uint32_t rmID;
+    uint32_t vsID;
+    uint32_t rID;
+    uint32_t rcID;
+
+    MaceKey serverAddr;
+
+    uint64_t totalLatency;
+    uint64_t totalReqCount;
+
+    uint64_t rentLatency;
+    uint64_t rentReqCount;
+
+    uint64_t reviewLatency;
+    uint64_t reviewReqCount;
+
+    uint64_t lastReqTimestamp;
+  }
+
+  context Controller {
+    mace::set<uint32_t> activeClientIDs;
+
+    uint64_t currDayStart;
+    uint64_t currDayEnd;
+    uint64_t currDayMid;
+    
+    mace::map<uint32_t, uint64_t> joinTimes;
+    mace::map<uint32_t, uint64_t> leaveTimes;
+
+    uint64_t exactStartTime;
+    uint64_t sleepTimePeriod;
+  }
+}
+
+transitions {
+  downcall maceInit() {
+    ADD_SELECTORS("MediaServiceClient");
+
+    RandomUtil::seedRandom( mace::getmtime() );
+    ASSERT( MediaServiceServer.size() == 1 );
+    async_initController();
+  }
+
+////////////// Controller ///////////////////////////////////////////////////////
+
+  async [Controller] initController() [ locking = ownership ] {
+    ADD_SELECTORS("MediaServiceClient");
+    maceout << "Initialize controller!" << Log::endl;
+
+    for( uint32_t i=1; i<=N_CLIENTS; i++) {
+      mace::string c_ctx_name = Util::generateContextName("Client", i);
+      createNewOwnership( "Controller", c_ctx_name );
+      async_initClient(i);
+    }
+
+    async_startController();
+  }
+
+  async [Controller] startController() {
+    ADD_SELECTORS("MediaServiceClient");
+    sleep(WARMUP_PERIOD);
+    maceout<< "Start Controller!" << Log::endl;
+    
+
+    currDayStart = 2;
+    currDayEnd = currDayStart + DAY_PERIOD;
+    currDayMid = (currDayStart+currDayEnd) / 2;
+    
+    joinTimes = generateRandomJoinTime( currDayStart, currDayEnd);
+    leaveTimes = generateRandomLeaveTime( currDayStart, currDayEnd);
+
+    exactStartTime = mace::getmtime();
+    sleepTimePeriod = 0;
+    
+    async_launchTimeScheduler();
+  }
+
+  async [Controller] launchTimeScheduler() {
+    ADD_SELECTORS("MediaServiceClient");
+    maceout<<"sleep time=" << sleepTimePeriod << Log::endl;
+    sleep(sleepTimePeriod);
+    uint64_t exact_current_time = mace::getmtime();
+    
+    uint64_t current_time = (uint64_t) (exact_current_time - exactStartTime) / 1000000;
+ 
+    mace::vector<uint64_t> toRemoved;
+    uint64_t next_join_time = 0;
+    uint64_t next_leave_time = 0;
+    if( current_time <= currDayMid ) { // next join time
+      mace::map<uint32_t, uint64_t>::iterator iter = joinTimes.begin();
+      for(; iter != joinTimes.end(); iter++ ){
+        if( current_time >= iter->second ) {
+          async_setActive( iter->first, true);
+          activeClientIDs.insert( iter->first );
+          toRemoved.push_back(iter->first);
+        } else {
+          if( next_join_time == 0 ) {
+            next_join_time = iter->second;
+          } else if( next_join_time > iter->second ) {
+            next_join_time = iter->second;
+          }
+        }
+      }
+      for( uint64_t i=0; i<toRemoved.size(); i++ ) {
+        joinTimes.erase( toRemoved[i] );
+      }
+
+    } else if ( current_time > currDayMid ) {
+      mace::map<uint32_t, uint64_t>::iterator iter = leaveTimes.begin();
+      for(; iter != leaveTimes.end(); iter++ ) {
+        if( current_time >= iter->second ) {
+          async_setActive( iter->first, false);
+          activeClientIDs.erase(iter->first);
+          toRemoved.push_back( iter->first );
+        } else {
+          if( next_leave_time == 0 ) {
+            next_leave_time = iter->second;
+          } else if( next_leave_time > iter->second ) {
+            next_leave_time = iter->second;
+          }
+        } 
+      }
+
+      for( uint64_t i=0; i<toRemoved.size(); i++ ) {
+        leaveTimes.erase( toRemoved[i] );
+      }
+    }
+
+    maceout<<"next_join_time=" << next_join_time<<" next_leave_time="<< next_leave_time << Log::endl;
+    if( next_join_time != 0 ) {
+      sleepTimePeriod = next_join_time - current_time;
+      async_launchTimeScheduler();
+    } else if( next_leave_time != 0 ) {
+      sleepTimePeriod = next_leave_time - current_time;
+      async_launchTimeScheduler();
+    } else {
+      if( joinTimes.empty() && !leaveTimes.empty() ) {
+        maceout << "Clients start to leave!" << Log::endl;
+        mace::map<uint32_t, uint64_t>::iterator iter = leaveTimes.begin();
+        for(; iter != leaveTimes.end(); iter++ ) {
+          if( next_leave_time == 0 ) {
+            next_leave_time = iter->second;
+          } else if( next_leave_time > iter->second ) {
+            next_leave_time = iter->second;
+          }
+        }
+        sleepTimePeriod = next_leave_time - current_time;
+        async_launchTimeScheduler();
+      } 
+    }
+
+    maceout<< "Current Active Clients: " << activeClientIDs.size() << Log::endl;
+  }
+
+////////////// Client ///////////////////////////////////////////////////////
+
+  async [Client<clientId>] initClient( const uint32_t& clientId) {
+    ADD_SELECTORS("MediaServiceClient");
+    maceout << "To initialize client["<< clientId <<"]!" << Log::endl;
+
+    isActive = false;
+        
+    totalLatency = 0;
+    totalReqCount = 0;
+
+    rentLatency = 0;
+    rentReqCount = 0;
+
+    reviewLatency = 0;
+    reviewReqCount = 0;
+
+    userID = 0;
+    feID = 0;
+    rmID = 0;
+    vsID = 0;
+    rID = 0;
+    rcID = 0;
+
+    uint32_t p = RandomUtil::randInt() % 100 + 1;
+
+    if( p < RENT_MOVIE_PERCENT ){
+      requestType = TYPE_RENT_MOVIE;
+      maceout << "Client["<< clientId <<"] will rent & watch movies!" << Log::endl;
+    } else {
+      requestType = TYPE_REVIEW_MOVIE;
+      maceout << "Client["<< clientId <<"] will review movies!" << Log::endl;
+    }
+    
+    downcall_route( *(MediaServiceServer.begin()), ConnectionRequest(clientId) );
+  }
+
+  async [Client<clientID>] setActive( const uint32_t& clientID, const bool& is_active ) {
+    ADD_SELECTORS("MediaServiceClient");
+    if( isActive && is_active ){
+      return;
+    } else if( !isActive && !is_active){
+      return;
+    }
+
+    isActive = is_active;
+
+    if( isActive ){
+      maceout << "To activate Client["<< clientID <<"]!" << Log::endl;
+      downcall_route( serverAddr, GetFrontEnd(clientID, userID) );
+    } else {
+      maceout << "To inactivate Client["<< clientID <<"]!" << Log::endl;
+      downcall_route( serverAddr, Leave(clientID, userID, rmID, rID));
+    }
+  }
+
+  upcall [Client<msg.clientID>] deliver(const MaceKey& src, const MaceKey& dest, const ConnectionSetup& msg) {
+    ADD_SELECTORS("MediaServiceClient");
+    serverAddr = msg.proxyAddr;
+    maceout<< "Client("<< msg.clientID<<")'s new serverAddr=" << serverAddr << Log::endl;
+
+    // async_setActive(msg.clientID, true);
+  }
+
+  upcall [Client<msg.clientID>] deliver(const MaceKey& src, const MaceKey& dest, const GetFrontEndReply& msg) {
+    ADD_SELECTORS("MediaServiceClient");
+    userID = msg.userID;
+    feID = msg.feID;
+
+    maceout << "Client["<< msg.clientID <<"] is assigned User["<< userID <<"] and FrontEnd["<< feID <<"]" << Log::endl;
+
+    if( requestType == TYPE_RENT_MOVIE ){
+      downcall_route( serverAddr, GetRentMovie(msg.clientID, userID) );
+    } else {
+      downcall_route( serverAddr, GetReview(msg.clientID, userID) );
+    }
+  }
+
+  upcall [Client<msg.clientID>] deliver(const MaceKey& src, const MaceKey& dest, const GetRentMovieReply& msg) {
+    ADD_SELECTORS("MediaServiceClient");
+    rmID = msg.rmID;
+    vsID = msg.vsID;
+
+    maceout << "Client["<< msg.clientID <<"]User["<< userID <<"] is assigned RentMovie["<< rmID <<"] and VideoStream["<< vsID <<"]" << Log::endl;
+
+    if(!isActive){
+      return;
+    }
+
+    sleep(1);
+    lastReqTimestamp = mace::getmtime();
+    downcall_route( serverAddr, RentMovieMessage(msg.clientID, userID, feID, rmID, vsID) );
+  }
+
+  upcall [Client< msg.clientID >] deliver(const MaceKey& src, const MaceKey& dest, const RentMovieReply& msg) {
+    ADD_SELECTORS("MediaServiceClient");
+
+    if( !msg.succ ) {
+      sleep(1);
+      maceout << "Client("<< msg.clientID <<") need to update its information!" << Log::endl;
+      downcall_route( serverAddr, UpdateRentMovie( msg.clientID, userID ) );
+      return;
+    }
+
+    rentLatency += mace::getmtime() - lastReqTimestamp;
+    rentReqCount ++;
+    
+    if( rentReqCount % RENT_OUTPUT_COUNT == 0 ) {
+      uint64_t avg_latency = (uint64_t) (rentLatency / RENT_OUTPUT_COUNT);
+
+      maceout<< "Client("<< msg.clientID <<") UserID("<< userID <<"): rentRequestCount=" << rentReqCount << " avg_latency=" << avg_latency << Log::endl;
+      rentLatency = 0;
+    }
+
+    if(!isActive) {
+      return;
+    }
+    
+    lastReqTimestamp = mace::getmtime();
+    downcall_route( serverAddr, RentMovieMessage(msg.clientID, userID, feID, rmID, vsID) );
+  }
+
+  upcall [Client<msg.clientID>] deliver(const MaceKey& src, const MaceKey& dest, const UpdateRentMovieReply& msg) {
+    ADD_SELECTORS("MediaServiceClient");
+    feID = msg.feID;
+    rmID = msg.rmID;
+    vsID = msg.vsID;
+
+    maceout << "Client["<< msg.clientID <<"]User["<< userID <<"] is assigned FrontEnd["<< feID <<"], RentMovie["<< rmID <<"] and VideoStream["<< vsID <<"]" << Log::endl;
+
+    if( feID == 0 || rmID == 0 || vsID == 0 ){
+      isActive = false;
+    }
+
+    if(!isActive) {
+      return;
+    }
+
+    lastReqTimestamp = mace::getmtime();
+    downcall_route( serverAddr, RentMovieMessage(msg.clientID, userID, feID, rmID, vsID) );
+  }
+
+  
+  upcall [Client<msg.clientID>] deliver(const MaceKey& src, const MaceKey& dest, const GetReviewReply& msg) {
+    ADD_SELECTORS("MediaServiceClient");
+    rID = msg.rID;
+    rcID = msg.rcID;
+
+    maceout << "Client["<< msg.clientID <<"]User["<< userID <<"] is assigned Review["<< rID <<"] and ReviewChecker["<< rcID <<"]" << Log::endl;
+
+    if(!isActive) {
+      return;
+    }
+
+    sleep(1);
+    lastReqTimestamp = mace::getmtime();
+    downcall_route( serverAddr, ReviewMessage(msg.clientID, userID, feID, rID, rcID) );
+  }
+
+  upcall [Client< msg.clientID >] deliver(const MaceKey& src, const MaceKey& dest, const ReviewReply& msg) {
+    ADD_SELECTORS("MediaServiceClient");
+
+    if( !msg.succ ) {
+      maceout << "Client["<< msg.clientID <<"] need to update it information!" << Log::endl;
+      downcall_route( serverAddr, UpdateReview( msg.clientID, userID ) );
+      return;
+    }
+
+    reviewLatency += mace::getmtime() - lastReqTimestamp;
+    reviewReqCount ++;
+    
+    if( reviewReqCount % REVIEW_OUTPUT_COUNT == 0 ) {
+      uint64_t avg_latency = (uint64_t) (reviewLatency / REVIEW_OUTPUT_COUNT);
+
+      maceout<< "Client("<< msg.clientID <<") UserID("<< userID <<"): reviewRequestCount=" << reviewReqCount << " avg_latency=" << avg_latency << Log::endl;
+      reviewLatency = 0;
+    }
+
+    if(!isActive) {
+      return;
+    }
+    
+    lastReqTimestamp = mace::getmtime();
+    downcall_route( serverAddr, ReviewMessage(msg.clientID, userID, feID, rID, rcID) );
+  }
+
+  upcall [Client<msg.clientID>] deliver(const MaceKey& src, const MaceKey& dest, const UpdateReviewReply& msg) {
+    ADD_SELECTORS("MediaServiceClient");
+    feID = msg.feID;
+    rID = msg.rID;
+    rcID = msg.rcID;
+
+    maceout << "Client["<< msg.clientID <<"]User["<< userID <<"] is assigned FrontEnd["<< feID <<"], Review["<< rID <<"] and ReviewChecker["<< rcID <<"]" << Log::endl;
+
+    if( feID == 0 || rID == 0 || rcID == 0 ){
+      isActive = false;
+    }
+
+    if(!isActive) {
+      return;
+    }
+
+    lastReqTimestamp = mace::getmtime();
+    downcall_route( serverAddr, ReviewMessage(msg.clientID, userID, feID, rID, rcID) );
+  }
+
+  
+}
+
+
+routines {
+
+  [__null] mace::map<uint32_t, uint64_t> generateRandomJoinTime( const uint64_t& day_start, const uint64_t& day_end ) {
+    ADD_SELECTORS("MediaServiceClient");
+    mace::map<uint32_t, uint64_t> join_times;
+
+    std::default_random_engine generator(mace::getmtime());
+    std::normal_distribution<double> distribution(DAY_JOIN,DAY_ERROR);
+    for( uint32_t i=1; i<=N_CLIENTS; i++ ) {
+      const uint32_t clientId = i;
+      double d_join_time = distribution(generator);
+      if( d_join_time < 0 ) {
+        while( d_join_time < 0 ) d_join_time += 1;
+      } else if( d_join_time > 1 ) {
+        while( d_join_time > 1 ) d_join_time -= 1;
+      }
+
+      // if( d_join_time > 0.5 ) d_join_time -= 0.5;
+
+      uint32_t period = (DAY_PERIOD-DAY_STABLE_PERIOD)/2;
+      uint64_t join_time = (uint64_t) ( period*d_join_time + day_start );
+      ASSERT( join_time >= day_start && join_time < day_end );
+
+      join_times[clientId] = join_time;
+    } 
+
+    mace::map<uint32_t, uint64_t>::const_iterator jtIter = join_times.begin();
+    for(; jtIter != join_times.end(); jtIter ++) {
+      maceout<< "Client("<< jtIter->first <<") join_time = " << jtIter->second << Log::endl;
+    }
+
+    return join_times;
+  }
+
+  [__null] mace::map<uint32_t, uint64_t> generateRandomLeaveTime( const uint64_t& day_start, const uint64_t& day_end ) {
+    ADD_SELECTORS("MediaServiceClient");
+    mace::map<uint32_t, uint64_t> leave_times;
+
+    std::default_random_engine generator(mace::getmtime());
+    std::normal_distribution<double> distribution(DAY_LEAVE, DAY_ERROR);
+    for( uint32_t i=1; i<=N_CLIENTS; i++ ) {
+      const uint32_t clientId = i;
+      double d_leave_time = distribution(generator);
+      if( d_leave_time < 0 ) {
+        while( d_leave_time < 0 ) d_leave_time += 1;
+      } else if( d_leave_time > 1 ) {
+        while( d_leave_time > 1 ) d_leave_time -= 1;
+      }
+
+      // if( d_leave_time < 0.5 ) d_leave_time += 0.5;
+
+      uint32_t period = (DAY_PERIOD-DAY_STABLE_PERIOD)/2;
+      uint64_t leave_time = (uint64_t) ( period + DAY_STABLE_PERIOD + period*d_leave_time + day_start );
+      ASSERT( leave_time > day_start && leave_time <= day_end );
+
+      leave_times[clientId] = leave_time;
+    }
+
+    mace::map<uint32_t, uint64_t>::const_iterator ltIter = leave_times.begin();
+    for(; ltIter != leave_times.end(); ltIter ++) {
+      maceout<< "Client("<< ltIter->first <<") leave_time = " << ltIter->second << Log::endl;
+    }
+
+    return leave_times;
+  }
+  
+
+}
+
+
+

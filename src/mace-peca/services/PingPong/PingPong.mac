@@ -1,0 +1,66 @@
+service PingPong;
+
+provides Null;
+
+constructor_parameters {
+  uint32_t N_NODE = 4;
+}
+
+services {
+  
+}
+
+messages {
+  
+}
+
+typedefs {
+  
+}
+
+auto_types {
+  
+}
+
+state_variables {
+  context Node<uint32_t nId> {
+    uint64_t count;
+    uint64_t startTime;
+  }
+}
+
+transitions {
+  downcall maceInit() {
+    for(uint32_t i=1; i<N_NODE; i++) {
+      async_initNode(i);
+    }
+  }
+
+  async [Node<nId>] initNode(const uint32_t& nId) {
+    count = 0;
+
+    if( nId == 1 ){
+      sleep(1);
+      startTime = mace::getmtime();
+      async_pingNextNode(2);
+    }
+
+  }
+
+  async [Node<nId>] pingNextNode(const uint32_t& nId) {
+    ADD_SELECTORS("PingPong");
+    count ++;
+
+    if( nId == 1 && count % 100 == 0 ){
+      double avg = (mace::getmtime() - startTime) / 100;
+      maceout << "avg=" << avg << ", count=" << count << Log::endl;
+      startTime = mace::getmtime();
+    }
+
+    if( nId == N_NODE ){
+      async_pingNextNode(1);
+    } else {
+      async_pingNextNode(nId+1);
+    }
+  }
+}

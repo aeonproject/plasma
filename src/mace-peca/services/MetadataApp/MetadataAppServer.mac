@@ -1,0 +1,254 @@
+#include "marray.h"
+#include "m_map.h"
+#include "RandomUtil.h"
+#include "mace-macros.h"
+
+#include <iostream>
+#include <fstream>
+
+service MetadataAppServer;
+
+provides Null;
+
+ 
+services {
+  Transport t;
+}
+
+constants {
+  
+}
+ 
+constructor_parameters {
+  uint32_t N_DIR = 4;
+  uint32_t N_FILE_PER_DIR = 4;
+
+  uint32_t N_DIR_PER_DIR = 4;
+
+  uint64_t N_DIR_OUTPUT = 0;
+  uint64_t N_FILE_OUTPUT = 0;
+
+  uint32_t HIER_DEPTH = 2;
+}
+
+typedefs {
+  
+}
+
+auto_types {
+  
+}
+
+#minclude "MetadataAppMessages.mi"
+
+state_variables {
+  context Root {
+    mace::vector<uint32_t> dirNodeIds;
+  }
+
+  context DirNode<uint32_t id> {
+  	uint64_t count;
+    mace::vector<uint32_t> fileNodeIds;
+    mace::vector<uint32_t> dirNodeIds;
+  }
+
+  context FileNode<uint32_t mId> {
+    uint64_t count;
+  }
+
+}
+
+transitions {
+  downcall maceInit() {
+    async_initRoot();
+  }
+
+  async [Root] initRoot() [ locking = ownership ]  {
+    ADD_SELECTORS("MetadataAppServer");
+    maceout << "Initilaize Metadata Store!" << Log::endl;
+
+    uint32_t start_file_id = 1;
+    for( uint32_t i=1; i<=N_DIR; i++ ) {
+      mace::string dir_ctx_name = Util::generateContextName( "DirNode", i );
+      createNewOwnership( "Root", dir_ctx_name );
+      async_initDirNode( i, start_file_id );
+      start_file_id += N_FILE_PER_DIR;
+    }
+  }
+
+  async [Root] initRoot2() [ locking = ownership ]  {
+    ADD_SELECTORS("MetadataAppServer");
+    maceout << "Initilaize Metadata Store!" << Log::endl;
+
+    uint32_t cur_hier_depth = 1;
+
+    for( uint32_t i=1; i<=N_DIR_PER_DIR; i++ ) {
+      dirNodeIds.push_back(i);
+      mace::string dir_ctx_name = Util::generateContextName( "DirNode", i );
+      createNewOwnership( "Root", dir_ctx_name );
+      async_initDirNode2( i,  i, cur_hier_depth );
+    }
+  }
+
+  async [Root] snapshotRootNode() {
+    ADD_SELECTORS("MetadataAppServer");
+    maceout << "Snapshot Root Node!" << Log::endl;
+
+    snapshotContext("Root");
+
+    for( uint32_t i=0; i<dirNodeIds.size(); i++ ) {
+      broadcast_snapshotDirNode( dirNodeIds[i] );
+    }
+  }
+
+  async [Root] restoreRootNode() {
+    ADD_SELECTORS("MetadataAppServer");
+    maceout << "Restore Root Node!" << Log::endl;
+
+    restoreContext("Root");
+
+    for( uint32_t i=0; i<dirNodeIds.size(); i++ ) {
+      broadcast_restoreDirNode( dirNodeIds[i] );
+    }
+  }
+
+  async [DirNode<d_id>] initDirNode2( const uint32_t& d_id, const uint32_t& cur_hier_id, const uint32_t& cur_hier_depth ) [ locking=ownership ] {
+    ADD_SELECTORS("MetadataAppServer");
+    maceout << "Initialize DirNode: " << d_id << Log::endl;
+
+    count = 0;
+
+    if( cur_hier_depth == HIER_DEPTH ){
+      return;
+    } 
+
+    uint32_t total_pre_node_count = 0;
+    uint32_t last_hier_n_dir = N_DIR_PER_DIR;
+
+    for( uint32_t i=0; i<cur_hier_depth-1; i++ ) {
+      total_pre_node_count += last_hier_n_dir;
+      last_hier_n_dir *= N_DIR_PER_DIR;
+    }
+
+    uint32_t start_child_id = total_pre_node_count + (cur_hier_id-1) * N_DIR_PER_DIR + 1;
+    uint32_t start_child_hier_id = (cur_hier_id-1) * N_DIR_PER_DIR + 1;
+    
+    mace::string dir_ctx_name = Util::generateContextName("DirNode", d_id);
+    for( uint32_t i=0; i<N_DIR_PER_DIR; i++ ) {
+      uint32_t child_d_id = start_child_id + i;
+      uint32_t child_hier_id = start_child_hier_id + i;
+
+      dirNodeIds.push_back( child_d_id );
+
+      mace::string child_ctx_name = Util::generateContextName("FileNode", child_d_id);
+      createNewOwnership( dir_ctx_name, child_ctx_name );
+
+      async_initDirNode2( child_d_id, child_hier_id, cur_hier_depth + 1 );
+    }
+  }
+
+  broadcast [DirNode<d_id>] snapshotDirNode( const uint32_t& d_id ) {
+    ADD_SELECTORS("MetadataAppServer");
+    maceout << "Snapshot Dir Node: " << d_id << Log::endl;
+
+    std::ostringstream oss;
+    oss << "DirNode-" << d_id;
+    mace::string fileName = oss.str();
+
+    snapshotContext(fileName);
+
+    for( uint32_t i=0; i<dirNodeIds.size(); i++ ) {
+      broadcast_snapshotDirNode( dirNodeIds[i] );
+    }
+  }
+
+  broadcast [DirNode<d_id>] restoreDirNode( const uint32_t& d_id ) {
+    ADD_SELECTORS("MetadataAppServer");
+    maceout << "Restore Dir Node: " << d_id << Log::endl;
+
+    std::ostringstream oss;
+    oss << "DirNode-" << d_id;
+    mace::string fileName = oss.str();
+
+    restoreContext(fileName);
+
+    for( uint32_t i=0; i<dirNodeIds.size(); i++ ) {
+      broadcast_restoreDirNode( dirNodeIds[i] );
+    }
+  }
+
+  upcall [DirNode<msg.dirId>] deliver(const MaceKey& src, const MaceKey& dest, const AccessDir& msg) {
+    ADD_SELECTORS("MetadataAppServer");
+    count ++;
+    if( N_DIR_OUTPUT > 0 && count % N_DIR_OUTPUT == 0 ){
+      maceout << "DirNode("<< msg.dirId <<") count=" << count << Log::endl; 
+    }  
+
+    downcall_route( src, AccessDirReply(msg.clientId) ); 
+  }
+
+  upcall deliver(const MaceKey& src, const MaceKey& dest, const ConnectionRequest& msg ) {
+    ADD_SELECTORS("MetadataAppServer");
+    std::ostringstream oss;
+    oss << src <<"["<<msg.clientId<<"]";
+
+    MaceAddr commAddr = getExternalCommContextAddr( src, oss.str() );
+    maceout << "commAddr=" << commAddr << Log::endl;
+    MaceKey commKey( ipv4, commAddr );
+    downcall_route( src, ConnectionSetup(msg.clientId, commKey) );
+    maceout<< "Assign external communication node("<< commKey <<") to client("<< msg.clientId <<") from " << src << Log::endl;
+  }
+
+  async [DirNode<d_id>] initDirNode( const uint32_t& d_id, const uint32_t start_file_id ) [ locking=ownership ] {
+    ADD_SELECTORS("MetadataAppServer");
+    maceout << "Initialize DirNode: " << d_id << Log::endl;
+
+    count = 0;
+    
+    uint32_t end_file_id = start_file_id + N_FILE_PER_DIR - 1;
+    mace::string dir_ctx_name = Util::generateContextName("DirNode", d_id);
+    for( uint32_t i=start_file_id; i<=end_file_id; i++ ) {
+      fileNodeIds.push_back(i);
+
+      mace::string file_ctx_name = Util::generateContextName("FileNode", i);
+      createNewOwnership( dir_ctx_name, file_ctx_name );
+      async_initFileNode( i );
+    }
+
+    sleep(1);
+  }
+
+  async [FileNode<f_id>] initFileNode( const uint32_t& f_id ) {
+    ADD_SELECTORS("MetadataAppServer");
+    maceout << "Initialize FileNode: " << f_id << Log::endl;
+    count = 0;
+  }
+
+  upcall [DirNode<msg.dirId>] deliver(const MaceKey& src, const MaceKey& dest, const AccessFile& msg) {
+    ADD_SELECTORS("MetadataAppServer");
+    count ++;
+    if( N_DIR_OUTPUT > 0 && count % N_DIR_OUTPUT == 0 ){
+      maceout << "DirNode("<< msg.dirId <<") count=" << count << Log::endl; 
+    }  
+
+    uint32_t iter = RandomUtil::randInt() % fileNodeIds.size();
+    uint32_t f_id = fileNodeIds[iter];
+    broadcast_accessFileNode( f_id );
+
+    downcall_route( src, AccessFileReply(msg.clientId) ); 
+  }
+
+  broadcast [FileNode<f_id>] accessFileNode( const uint32_t& f_id ) {
+    ADD_SELECTORS("MetadataAppServer");
+
+    count ++;
+    if( N_FILE_OUTPUT > 0 && count % N_FILE_OUTPUT == 0 ) {
+      maceout << "FileNode("<< f_id <<") count=" << count << Log::endl;
+    }
+  }
+
+}
+
+routines {
+  
+}

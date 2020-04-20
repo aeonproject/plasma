@@ -1,0 +1,240 @@
+
+service HaloPresenceClient;
+
+provides Null;
+
+services {
+  Transport t;
+}
+
+constants {
+  
+}
+
+constructor_parameters {
+  NodeSet HaloServer = NodeSet(); /* Should be only one node */
+  uint64_t OUTPUT_COUNT = 100;
+  uint32_t N_CLIENTS = 1;
+  uint32_t START_GLOBAL_CLIENT_ID = 1;
+
+  uint32_t TIME_PERIOD = 180;
+  uint32_t N_TIME_PERIOD = 4;
+}
+
+typedefs {
+  
+}
+
+#minclude "HaloPresenceMessages.mi"
+
+auto_types {
+  
+}
+
+state_variables {
+   
+  context Client<uint32_t clientId> {
+    uint32_t global_clientId;
+    uint32_t nActiveRouters;
+    uint32_t sessionId;
+    uint32_t playerId;
+
+    MaceKey serverAddr;
+
+    uint64_t latency;
+    uint64_t reqCount;
+
+    uint64_t last_request_timestamp;
+    uint32_t lastRouterId;
+  }
+
+  context Controller {
+    uint32_t nextLaunchClientId;
+    uint32_t nLaunchClientPerPeriod;
+    uint64_t restTimeThisPeriod;
+  }
+}
+
+transitions {
+  downcall maceInit() {
+    ADD_SELECTORS("HaloPresenceClient");
+
+    RandomUtil::seedRandom( mace::getmtime() );
+    ASSERT( HaloServer.size() == 1 );
+    async_initController();
+  }
+
+  async [Controller] initController() [ locking = ownership ] {
+    ADD_SELECTORS("HaloPresenceClient");
+    maceout << "Initialize controller!" << Log::endl;
+
+    nLaunchClientPerPeriod = N_CLIENTS / N_TIME_PERIOD;
+    ASSERT( nLaunchClientPerPeriod > 0 );
+
+    restTimeThisPeriod = TIME_PERIOD;
+
+    nextLaunchClientId = 1;
+
+    // uint64_t waiting_time = getNextWaitingTime( restTimeThisPeriod );
+    uint64_t waiting_time = 5;
+
+    restTimeThisPeriod -= waiting_time;
+
+    maceout << "Next waiting time: " << waiting_time << ", rest_time: " << restTimeThisPeriod << Log::endl;
+    async_activateNextClient( waiting_time );
+
+
+    for( uint32_t i=1; i<=N_CLIENTS; i++) {
+      mace::string c_ctx_name = Util::generateContextName("Client", i);
+      createNewOwnership( "Controller", c_ctx_name );
+      async_initClient(i, START_GLOBAL_CLIENT_ID+i-1);
+    }
+
+  }
+
+  async [Controller] activateNextClient( const uint64_t& waiting_time ) {
+    ADD_SELECTORS("HaloPresenceClient");
+    sleep( waiting_time );
+
+    async_activateClient( nextLaunchClientId );
+
+    if( nextLaunchClientId == N_CLIENTS ) {
+      return;
+    }
+
+
+    uint64_t w_time = 5;
+    maceout << "Next waiting time: " << w_time << ", rest_time: " << restTimeThisPeriod << Log::endl;
+    nextLaunchClientId ++; 
+    async_activateNextClient( w_time );
+
+/*
+    uint64_t w_time = 0;
+    
+    if( nextLaunchClientId % nLaunchClientPerPeriod == 0 ) {
+      uint64_t rest_time = restTimeThisPeriod;
+
+      restTimeThisPeriod = TIME_PERIOD;
+      w_time = getNextWaitingTime( restTimeThisPeriod );
+      
+      restTimeThisPeriod -= waiting_time;
+      w_time += rest_time + 2 * TIME_PERIOD;
+
+      nextLaunchClientId ++;
+    } else {
+      w_time = getNextWaitingTime( restTimeThisPeriod );
+      
+      restTimeThisPeriod -= w_time;
+      nextLaunchClientId ++; 
+    }
+
+    maceout << "Next waiting time: " << w_time << ", rest_time: " << restTimeThisPeriod << Log::endl;
+    async_activateNextClient( w_time );
+*/
+  }
+
+  async [Client<cId>] activateClient( const uint32_t& cId ) {
+    ADD_SELECTORS("HaloPresenceClient");
+    maceout << "To activate Client["<< cId <<"]!" << Log::endl;
+
+    downcall_route( serverAddr, Join(cId, global_clientId) );
+  }
+
+  async [Client<clientId>] initClient( const uint32_t& clientId, const uint32_t& global_cId) {
+    ADD_SELECTORS("HaloPresenceClient");
+        
+    latency = 0;
+    reqCount = 0;
+    global_clientId = global_cId;
+    
+    maceout << "To initialize client["<< clientId <<"] with global client Id: " << global_cId << Log::endl;
+    downcall_route( *(HaloServer.begin()), ConnectionRequest(clientId) );
+  }
+
+  upcall [Client<msg.clientId>] deliver(const MaceKey& src, const MaceKey& dest, const ConnectionSetup& msg) {
+    ADD_SELECTORS("HaloPresenceClient");
+    serverAddr = msg.proxyAddr;
+    maceout<< "Client("<< msg.clientId<<")'s new serverAddr=" << serverAddr << Log::endl;
+  }
+
+  upcall [Client<msg.clientId>] deliver(const MaceKey& src, const MaceKey& dest, const JoinReply& msg) {
+    ADD_SELECTORS("HaloPresenceClient");
+    nActiveRouters = msg.nActiveRouters;
+    sessionId = msg.sessionId;
+    playerId = msg.playerId;
+
+    maceout << "Client["<< msg.clientId <<"] is assigned Player["<< playerId <<"] in GameSession["<< sessionId <<"] with nActiveRouters=" << nActiveRouters << Log::endl;
+
+    ASSERT( nActiveRouters > 0 );
+
+
+    lastRouterId = RandomUtil::randInt() % nActiveRouters + 1;
+
+    last_request_timestamp = mace::getmtime();
+    downcall_route( serverAddr, Heartbeat(msg.clientId, lastRouterId, sessionId, playerId) );
+  }
+
+  upcall [Client< msg.clientId >] deliver(const MaceKey& src, const MaceKey& dest, const HeartbeatReply& msg) {
+    ADD_SELECTORS("HaloPresenceClient");
+
+    if( !msg.succ ) {
+      maceout << "Router("<< lastRouterId <<") is inactive!" << Log::endl;
+      downcall_route( serverAddr, UpdateRouterInfo( msg.clientId ) );
+      return;
+    }
+
+    reqCount ++;
+    
+    latency += mace::getmtime() - last_request_timestamp;
+    
+    if( reqCount % OUTPUT_COUNT == 0 ) {
+      uint64_t avg_latency = (uint64_t) (latency / OUTPUT_COUNT);
+
+      maceout<< "Client("<< msg.clientId <<") GlobalClien("<< global_clientId <<"): requestCount=" << reqCount << " avg_latency=" << avg_latency << Log::endl;
+      latency = 0;
+      downcall_route( serverAddr, UpdateRouterInfo( msg.clientId ) );
+      return;
+    }
+    
+    lastRouterId = RandomUtil::randInt() % nActiveRouters + 1;
+
+    last_request_timestamp = mace::getmtime();
+    downcall_route( serverAddr, Heartbeat(msg.clientId, lastRouterId, sessionId, playerId) );
+  }
+
+  
+  upcall [Client<msg.clientId>] deliver(const MaceKey& src, const MaceKey& dest, const UpdateRouterInfoReply& msg) {
+    ADD_SELECTORS("HaloPresenceClient");
+    if( nActiveRouters != msg.nActiveRouters ) {
+      maceout << "Client("<< msg.clientId <<") update its nActiveRouters  from "<< nActiveRouters <<" to " << msg.nActiveRouters << Log::endl;
+      nActiveRouters = msg.nActiveRouters;
+      ASSERT( nActiveRouters > 0 );
+    }
+
+    lastRouterId = RandomUtil::randInt() % nActiveRouters + 1;
+
+    last_request_timestamp = mace::getmtime();
+    downcall_route( serverAddr, Heartbeat(msg.clientId, lastRouterId, sessionId, playerId) );
+  }
+
+  
+}
+
+
+routines {
+
+  [__null] uint64_t getNextWaitingTime( const uint64_t& rest_time ) {
+    if( rest_time == 0 ){
+      return 0;
+    }
+
+    uint64_t waiting_time = RandomUtil::randInt() % rest_time;
+    
+    return waiting_time;
+  }
+  
+
+}
+
+
+

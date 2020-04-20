@@ -1,0 +1,237 @@
+#include "marray.h"
+#include "RandomUtil.h"
+#include "mvector.h"
+#include "mlist.h"
+#include "m_map.h"
+#include <stdio.h>
+#include <sys/time.h>
+
+service MetadataAppClient;
+ 
+provides Null;
+
+
+services {
+  Transport t;
+}
+ 
+constants {
+  
+}
+ 
+constructor_parameters {
+  uint32_t N_CLIENT = 1;
+	NodeSet MetadataServer = NodeSet();
+
+  uint32_t N_DIR = 4;
+  uint32_t N_DIR_PER_DIR = 4;
+  uint32_t HIER_DEPTH = 2;
+
+  uint64_t N_OUTPUT = 100;
+
+  uint32_t DIR1_PERCENT = 50;
+  uint32_t DIR2_PERCENT = 67;
+  uint32_t DIR3_PERCENT = 84;
+
+  uint32_t PERCENT = 50;
+}
+
+#minclude "MetadataAppMessages.mi"
+
+state_variables {
+  context Client <uint32_t clientId> {
+    uint32_t clientId;
+   
+    MaceKey serverAddr;
+    
+    uint64_t lastRequestTime;
+    
+    mace::map<uint32_t, uint64_t> dirCounts;
+
+    uint32_t totalDirNodes;
+    
+    uint64_t reqCount;
+    uint64_t requestTimePeriod;
+  }
+
+  context Controller {
+
+  }
+
+}
+ 
+transitions {
+  downcall maceInit() {
+    ADD_SELECTORS("MetadataAppClient");
+    maceout << "Start MetadataAppClient!" << Log::endl;
+    ASSERT( MetadataServer.size() == 1 );
+    async_initController();
+  }
+
+  async [Controller] initController() [ locking = ownership ] {
+    ADD_SELECTORS("MetadataAppClient");
+    maceout << "Initialize Controller!" << Log::endl;
+
+    for( uint32_t i=1; i<=N_CLIENT; i++) {
+      uint32_t clientId = i;
+      mace::string clientCtxName = Util::generateContextName("Client", clientId);
+      createNewOwnership("Controller", clientCtxName);
+      async_initClient(clientId);
+    }
+
+  }
+
+  async [Client<nClient>] initClient(const uint32_t& nClient) {
+    ADD_SELECTORS("MetadataAppClient");
+    maceout << "To initialize Client("<< nClient <<")!" << Log::endl;
+
+    clientId = nClient;
+        
+    reqCount = 0;
+    requestTimePeriod = 0;
+
+    uint32_t last_hier_n_node = N_DIR_PER_DIR;
+    totalDirNodes = last_hier_n_node;
+
+    for( uint32_t i=2; i<=HIER_DEPTH; i++  ) {
+      last_hier_n_node *= N_DIR_PER_DIR;
+      totalDirNodes += last_hier_n_node;
+    }
+
+    downcall_route( *( MetadataServer.begin() ), ConnectionRequest(clientId) );
+  }
+
+
+  upcall [Client<msg.clientId>] deliver(const MaceKey& src, const MaceKey& dest, const ConnectionSetup& msg) {
+    ADD_SELECTORS("MetadataAppClient");
+    maceout << "Client("<< msg.clientId <<")'s serverAddr=" << msg.proxyAddr << Log::endl;
+    serverAddr = msg.proxyAddr;
+
+    sleep(1);
+    
+  /*  uint32_t dir_id = getAccessDirID2( totalDirNodes );
+
+    if( dirCounts.find(dir_id) == dirCounts.end() ) {
+      dirCounts[dir_id] = 1;
+    } else {
+      dirCounts[dir_id] += 1;
+    }
+  */
+
+    uint32_t dir_id = 1;
+    for(uint32_t i=0; i<N_DIR; i++ ) {
+      uint64_t p = RandomUtil::randInt() % 100;
+      if( p < PERCENT ) {
+        break;
+      } else {
+        dir_id ++;
+      }
+    }
+
+    lastRequestTime = mace::getmtime();
+    downcall_route(serverAddr, AccessFile( clientId, dir_id ) );
+    // downcall_route(serverAddr, AccessDir( clientId, dir_id ) );
+  }
+
+  upcall [Client<msg.clientId>] deliver(const MaceKey& src, const MaceKey& dest, const AccessFileReply& msg) {
+    ADD_SELECTORS("MetadataAppClient");
+    
+    uint64_t latency = mace::getmtime() - lastRequestTime;
+    requestTimePeriod += latency;
+    reqCount ++;
+    
+    if( reqCount % N_OUTPUT == 0 ) {
+      maceout << "Client("<< msg.clientId <<") reqCount=" << reqCount << ", avgLatency=" << requestTimePeriod / N_OUTPUT << ", dirCounts=" << dirCounts << Log::endl;
+
+      requestTimePeriod = 0;
+      dirCounts.clear();
+    }
+
+
+/*
+    uint64_t p = RandomUtil::randInt() % 100;
+    uint32_t dir_id = 1;
+
+    if( p < DIR1_PERCENT ) {
+      dir_id = 1;
+    } else if( p < DIR2_PERCENT ){
+      dir_id = 2;
+    } else if( p < DIR3_PERCENT ) {
+      dir_id = 3;
+    } else {
+      dir_id = 4;
+    }
+*/  
+
+    uint32_t dir_id = 1;
+    for(uint32_t i=0; i<N_DIR; i++ ) {
+      uint64_t p = RandomUtil::randInt() % 100;
+      if( p < PERCENT ) {
+        break;
+      } else {
+        dir_id ++;
+      }
+    }
+
+    if( dirCounts.find(dir_id) == dirCounts.end() ) {
+      dirCounts[dir_id] = 1;
+    } else {
+      dirCounts[dir_id] += 1;
+    }
+
+    lastRequestTime = mace::getmtime();
+    downcall_route(serverAddr, AccessFile( clientId, dir_id ) );
+  }
+
+  upcall [Client<msg.clientId>] deliver(const MaceKey& src, const MaceKey& dest, const AccessDirReply& msg) {
+    ADD_SELECTORS("MetadataAppClient");
+    
+    uint64_t latency = mace::getmtime() - lastRequestTime;
+    requestTimePeriod += latency;
+    reqCount ++;
+    
+    if( reqCount % N_OUTPUT == 0 ) {
+      maceout << "Client("<< msg.clientId <<") reqCount=" << reqCount << ", avgLatency=" << requestTimePeriod / N_OUTPUT << ", dirCounts=" << dirCounts << Log::endl;
+
+      requestTimePeriod = 0;
+      dirCounts.clear();
+    }
+
+    uint32_t dir_id = getAccessDirID2( totalDirNodes );
+
+    if( dirCounts.find(dir_id) == dirCounts.end() ) {
+      dirCounts[dir_id] = 1;
+    } else {
+      dirCounts[dir_id] += 1;
+    }
+
+    lastRequestTime = mace::getmtime();
+    downcall_route(serverAddr, AccessDir( clientId, dir_id ) );
+  }
+}
+
+routines {
+
+  [__null] uint32_t getAccessDirID() {
+    uint64_t p = RandomUtil::randInt() % 100;
+    uint32_t dir_id = 1;
+
+    if( p < DIR1_PERCENT ) {
+      dir_id = 1;
+    } else if( p < DIR2_PERCENT ){
+      dir_id = 2;
+    } else if( p < DIR3_PERCENT ) {
+      dir_id = 3;
+    } else {
+      dir_id = 4;
+    }
+
+    return dir_id;
+  }
+
+  [__null] uint32_t getAccessDirID2(const uint32_t& total_n_dirnode ) {
+    uint32_t dir_id = RandomUtil::randInt() % total_n_dirnode + 1;
+    return dir_id;
+  }
+  
+}

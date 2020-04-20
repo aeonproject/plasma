@@ -1,0 +1,152 @@
+#include "m_map.h"
+#include "marray.h"
+#include "MaceTypes.h" 
+#include "RandomUtil.h"
+
+service ChattingRoomAppServer;
+
+provides Null;
+
+services {
+  Transport t;
+}
+
+constants {
+  uint8_t LIGHT_WL = 0;
+  uint8_t MEDIUM_WL = 1;
+  uint8_t HEAVY_WL = 2;  
+}
+
+////////
+constructor_parameters {
+    uint32_t N_USER = 8;
+    uint64_t WARMUP_TIME = 60;
+    uint64_t N_OUTPUT = 100;
+
+    uint8_t WORKLOAD_TYPE = 0;
+    
+    uint64_t LIGHT_OUTER_LOOP = 1;
+    uint64_t LIGHT_INNER_LOOP = 1;
+
+    uint64_t MEDIUM_OUTER_LOOP = 10;
+    uint64_t MEDIUM_INNER_LOOP = 1000;
+
+    uint64_t HEAVY_OUTER_LOOP = 100;
+    uint64_t HEAVY_INNER_LOOP = 10000;
+}
+
+typedefs {
+
+}
+
+auto_types {
+  
+}
+ 
+state_variables {
+  context ChattingRoom {
+    
+  }
+  
+  context User<uint32_t uId>{
+    uint64_t reqCount;
+    uint64_t launchTimestamp;
+    uint64_t totalLatency;
+  }
+
+}
+
+transitions {
+  downcall maceInit()  {
+    ADD_SELECTORS("ChattingRoomAppServer");
+    maceout << "Start ChattingRoomAppServer!" << Log::endl;
+        
+    async_initChattingRoom();
+  }
+
+  async [ChattingRoom] initChattingRoom() [locking=ownership] {
+    ADD_SELECTORS("ChattingRoomAppServer");
+    maceout << "To initialize Chatting Room!" << Log::endl;
+    
+    for( uint32_t i=1; i<=N_USER; i++ ) {
+      mace::string user_ctx_name = Util::generateContextName("User", i);
+      createNewOwnership("ChattingRoom", user_ctx_name );
+
+      async_initUser( i );      
+    }
+  }
+
+  async [User<uId>] initUser( const uint32_t& uId ) {
+    ADD_SELECTORS("ChattingRoomAppServer");
+    maceout << "To initialize User("<< uId <<")!"<< Log::endl;
+    
+    uint32_t mid_u_id = N_USER / 2;
+    reqCount = 0;
+    totalLatency = 0;
+
+    if( uId <= mid_u_id ) {
+      sleep(WARMUP_TIME);
+      uint32_t to_u_id = mid_u_id + uId;
+      
+      launchTimestamp = mace::getmtime();
+      async_sendMessage( to_u_id, uId ); 
+    }
+  }
+
+  async [User<to_uId>] sendMessage(const uint32_t& to_uId, const uint32_t& from_uId){
+    ADD_SELECTORS("ChattingRoomAppServer");
+    doComputation();
+    async_replyMessage( from_uId );
+  }
+
+  async [User<uId>] replyMessage(const uint32_t& uId){
+    ADD_SELECTORS("ChattingRoomAppServer");
+    reqCount ++;
+    totalLatency += mace::getmtime() - launchTimestamp;
+
+    if( reqCount % N_OUTPUT == 0 ) {
+      double avg_latency = totalLatency / N_OUTPUT;
+      maceout << "User("<< uId <<") reqCount=" << reqCount << ", avgLatency=" << avg_latency << Log::endl;
+      totalLatency = 0;
+    }
+
+    uint32_t to_u_id = uId + N_USER / 2;
+    
+    launchTimestamp = mace::getmtime();
+    async_sendMessage( to_u_id, uId );    
+  }
+
+  
+}
+
+routines {
+
+  [__null] void doComputation() {
+    uint8_t wl_type = WORKLOAD_TYPE;
+
+    uint64_t m = 0;
+
+    uint64_t outer_loop = 1;
+    uint64_t inner_loop = 1;
+
+    if( wl_type == LIGHT_WL ) {
+      outer_loop = LIGHT_OUTER_LOOP;
+      inner_loop = LIGHT_INNER_LOOP;
+    } else if( wl_type == MEDIUM_WL ) {
+      outer_loop = MEDIUM_OUTER_LOOP;
+      inner_loop = MEDIUM_INNER_LOOP;
+    } else {
+      outer_loop = HEAVY_OUTER_LOOP;
+      inner_loop = HEAVY_INNER_LOOP;
+    }
+    
+    for( uint32_t i=0; i<outer_loop; i++ ){
+      m = RandomUtil::randInt(i);
+      for( uint32_t j=0; j<inner_loop; j++ ){
+        m ++;
+      }
+    }
+  }
+
+}
+

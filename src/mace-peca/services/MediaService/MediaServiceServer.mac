@@ -1,0 +1,757 @@
+
+#include <stdlib.h>
+#include "Util.h"
+
+service MediaServiceServer;
+provides Null;
+
+typedefs {
+
+}
+
+services {
+  Transport t;
+}
+
+constants {
+  uint8_t LIGHT_ROUTER_WORKLOAD = 0;
+}
+
+constructor_parameters {
+  uint32_t MAX_USER_PER_FRONTEND = 4;
+  uint32_t MAX_USER_PER_RENTMOVIE = 4;
+  uint32_t MAX_USER_PER_VIDEOSTREAM= 2;
+  uint32_t MAX_USER_PER_REVIEW = 4;
+  uint32_t MAX_USER_PER_REVIEWCHECKER = 4;
+
+  uint64_t N_UPDATE_HISTORY = 10;
+
+  uint64_t N_GET_MOVIE_REVIEWS = 5;
+  uint64_t N_UPDATE_USER_REVIEW = 10;
+
+  uint64_t WM_INNER_LOOP = 100;
+  uint64_t WM_OUTER_LOOP = 10000;
+
+  uint64_t RM_INNER_LOOP = 10;
+  uint64_t RM_OUTER_LOOP = 10000;
+
+  uint64_t N_OUTPUT = 100;
+}
+
+#minclude "MediaServiceMessages.mi"
+
+auto_types {
+  
+}
+ 
+state_variables {
+  context Controller {
+    uint32_t nextUserID;
+
+    uint32_t nextFrontEndID;
+    uint32_t nextRentMovieID;
+    uint32_t nextVideoStreamID;
+    uint32_t nextUserInfoID;
+    uint32_t nextReviewID;
+    uint32_t nextUserReviewID;
+    uint32_t nextReviewCheckerID;
+
+    mace::map<uint32_t, uint32_t> userFrontEnds;
+    mace::map<uint32_t, mace::vector<uint32_t> > frontEndUsers;
+    mace::set<uint32_t> createdFrontEndIDs;
+
+    mace::map<uint32_t, uint32_t> userRentMovies;
+    mace::map<uint32_t, mace::vector<uint32_t> > rentMovieUsers;
+    mace::set<uint32_t> createdRentMovieIDs;
+
+    mace::map<uint32_t, uint32_t> userReviews;
+    mace::map<uint32_t, mace::vector<uint32_t> > reviewUsers;
+    mace::set<uint32_t> createdReviewIDs;
+
+    mace::map<uint32_t, uint32_t> userVideoStreams;
+    mace::map<uint32_t, mace::vector<uint32_t> > videoStreamUsers;
+    mace::set<uint32_t> createdVideoStreamIDs;
+
+    mace::map<uint32_t, uint32_t> userReviewCheckers;
+    mace::map<uint32_t, mace::vector<uint32_t> > reviewCheckerUsers;
+    mace::set<uint32_t> createdReviewCheckerIDs;
+
+  }
+
+  context FrontEnd<uint32_t ftId> {
+    mace::vector<uint32_t> userIDs;
+    mace::set<uint32_t> userIDSet;
+
+    uint64_t count;
+  }
+
+  context RentMovie<uint32_t rmId> {
+    mace::vector<uint32_t> userIDs;
+    mace::set<uint32_t> userIDSet;
+
+    uint64_t count;
+  }
+
+  context VideoStream<uint32_t vsId> {
+    mace::vector<uint32_t> userIDs;
+    mace::set<uint32_t> userIDSet;
+
+    mace::map<uint32_t, uint32_t> updateHistoryCounts;
+
+    uint64_t count;
+  }
+
+  context UserInfo<uint32_t uiId> {
+    uint64_t count;
+  }
+
+  context Review<uint32_t rId> {
+    mace::vector<uint32_t> userIDs;
+    mace::set<uint32_t> userIDSet;
+
+    mace::map<uint32_t, uint64_t> movieReviewCounts;
+    mace::map<uint32_t, uint64_t> userReviewCounts;
+
+    uint64_t count;
+  }
+
+  context UserReview<uint32_t urId> {
+    uint32_t count;
+  }
+
+  context MovieReview<uint32_t mrId> {
+    uint64_t count;
+  }
+
+  context ReviewChecker<uint32_t rcId> {
+    mace::vector<uint32_t> userIDs;
+    mace::set<uint32_t> userIDSet;
+
+    uint64_t count;
+  }
+
+}
+
+
+ 
+transitions {
+  downcall maceInit()  {
+    ADD_SELECTORS("MediaServiceServer");
+    maceout << "Start MediaServiceServer!" << Log::endl;
+    async_initController();
+  }
+
+////////////// Controller ///////////////////////////////////////////////////////
+  async [Controller] initController() [ locking = ownership ] {
+    ADD_SELECTORS("MediaServiceServer");
+    maceout<< "Initialize controller!" << Log::endl;
+
+    nextUserID = 1;    
+
+    nextFrontEndID = 1;
+    nextRentMovieID = 1;
+    nextVideoStreamID = 1;
+    nextUserInfoID = 1;
+    nextReviewID = 1;
+    nextUserReviewID = 1;
+    nextReviewID = 1;
+    nextReviewCheckerID = 1;
+  }
+
+  upcall [Controller] deliver(const MaceKey& src, const MaceKey& dest, const ConnectionRequest& msg ) {
+    ADD_SELECTORS("MediaServiceServer");
+    std::ostringstream oss;
+    oss << src <<"["<<msg.clientID<<"]";
+
+    MaceAddr commAddr = getExternalCommContextAddr( src, oss.str() );
+    maceout << "commAddr=" << commAddr << Log::endl;
+    MaceKey commKey( ipv4, commAddr );
+    downcall_route( src, ConnectionSetup(commKey, msg.clientID) );
+    maceout<< "Assign external communication node("<< commKey <<") to client("<< msg.clientID <<") from " << src << Log::endl;
+  }
+
+  upcall [Controller] deliver(const MaceKey& src, const MaceKey& dest, const GetFrontEnd& msg ) {
+    ADD_SELECTORS("MediaServiceServer");
+    async_getFrontEnd(src, msg.clientID, msg.userID);
+  }
+
+  async [Controller] getFrontEnd( const MaceKey& src, const uint32_t& client_id, const uint32_t& user_id ) [locking=ownership]{
+    ADD_SELECTORS("MediaServiceServer");
+    uint32_t u_id  = user_id;
+    if( u_id == 0 ){
+      u_id = nextUserID ++;
+    }
+
+    uint32_t fe_id = assignUser( u_id, frontEndUsers, userFrontEnds, nextFrontEndID, MAX_USER_PER_FRONTEND);
+    if( createdFrontEndIDs.count(fe_id) == 0 ){
+      const mace::string ctx_name = Util::generateContextName("FrontEnd", fe_id);
+      createNewOwnership("Controller", ctx_name); 
+
+      async_initFrontEnd(fe_id);
+      createdFrontEndIDs.insert(fe_id);
+    }
+    updateAssignment( frontEndUsers, "FrontEnd" );
+    maceout << "Assign User["<< u_id <<"] FrontEnd["<< fe_id <<"] to Client["<< client_id <<"] from " << src << Log::endl;
+    downcall_route(src, GetFrontEndReply(client_id, u_id, fe_id) );
+  }
+
+  upcall [Controller] deliver(const MaceKey& src, const MaceKey& dest, const GetRentMovie& msg ) {
+    ADD_SELECTORS("MediaServiceServer");
+    async_getRentMovie(src, msg.clientID, msg.userID);
+  }
+
+  async [Controller] getRentMovie( const MaceKey& src, const uint32_t& client_id, const uint32_t& user_id ) [locking=ownership]{
+    ADD_SELECTORS("MediaServiceServer");
+    
+    uint32_t rm_id = assignUser( user_id, rentMovieUsers, userRentMovies, nextRentMovieID, MAX_USER_PER_RENTMOVIE);
+    if( createdRentMovieIDs.count(rm_id) == 0 ){
+      const mace::string ctx_name = Util::generateContextName("RentMovie", rm_id);
+      createNewOwnership("Controller", ctx_name); 
+
+      async_initRentMovie(rm_id);
+      createdRentMovieIDs.insert(rm_id);
+    }
+    updateAssignment( rentMovieUsers, "RentMovie" );
+
+
+    uint32_t vs_id = assignUser( user_id, videoStreamUsers, userVideoStreams, nextVideoStreamID, MAX_USER_PER_VIDEOSTREAM);
+    if( createdVideoStreamIDs.count(vs_id) == 0 ){
+      const mace::string ctx_name = Util::generateContextName("VideoStream", vs_id);
+      createNewOwnership("Controller", ctx_name); 
+
+      async_initVideoStream(vs_id);
+      createdVideoStreamIDs.insert(vs_id);
+    }
+    updateAssignment( videoStreamUsers, "VideoStream" );
+
+    mace::string ctx_name = Util::generateContextName("UserInfo", user_id);
+    createNewOwnership("Controller", ctx_name);
+    async_initUserInfo(user_id);
+
+    maceout << "Assign RentMovie["<< rm_id <<"] VideoStream["<< vs_id <<"] to Client["<< client_id <<"]User["<< user_id <<"]!" << Log::endl;
+
+    downcall_route(src, GetRentMovieReply(client_id, rm_id, vs_id) );
+  }
+
+  upcall [Controller] deliver(const MaceKey& src, const MaceKey& dest, const GetReview& msg ) {
+    ADD_SELECTORS("MediaServiceServer");
+    async_getReview(src, msg.clientID, msg.userID);
+  }
+
+  async [Controller] getReview( const MaceKey& src, const uint32_t& client_id, const uint32_t& user_id ) [locking=ownership]{
+    ADD_SELECTORS("MediaServiceServer");
+    
+    uint32_t r_id = assignUser( user_id, reviewUsers, userReviews, nextReviewID, MAX_USER_PER_REVIEW);
+    if( createdReviewIDs.count(r_id) == 0 ){
+      const mace::string ctx_name = Util::generateContextName("Review", r_id);
+      createNewOwnership("Controller", ctx_name); 
+
+      async_initReview(r_id);
+      createdReviewIDs.insert(r_id);
+    }
+    updateAssignment( reviewUsers, "Review" );
+
+    uint32_t rc_id = assignUser( user_id, reviewCheckerUsers, userReviewCheckers, nextReviewCheckerID, MAX_USER_PER_REVIEWCHECKER);
+    if( createdReviewCheckerIDs.count(rc_id) == 0 ){
+      const mace::string ctx_name = Util::generateContextName("ReviewChecker", rc_id);
+      createNewOwnership("Controller", ctx_name); 
+
+      async_initReviewChecker(rc_id);
+      createdReviewCheckerIDs.insert(rc_id);
+    }
+    updateAssignment( reviewCheckerUsers, "ReviewChecker" );
+
+    mace::string ctx_name = Util::generateContextName("UserReview", user_id);
+    createNewOwnership("Controller", ctx_name);
+    async_initUserReview( user_id );
+
+    maceout << "Assign Review["<< r_id <<"] ReviewChecker["<< rc_id <<"] to Client["<< client_id <<"]User["<< user_id <<"]!" << Log::endl;
+    downcall_route(src, GetReviewReply(client_id, r_id, rc_id) );
+  }
+
+  upcall [Controller] deliver(const MaceKey& src, const MaceKey& dest, const UpdateRentMovie& msg ) {
+    ADD_SELECTORS("MediaServiceServer");
+    uint32_t new_fe_id = 0;
+    uint32_t new_rm_id = 0;
+    uint32_t new_vs_id = 0;
+
+    if( userFrontEnds.find(msg.userID) != userFrontEnds.end() ){
+      new_fe_id = userFrontEnds[msg.userID];
+    }
+
+    if( userRentMovies.find(msg.userID) != userRentMovies.end() ){
+      new_rm_id = userRentMovies[msg.userID];
+    }
+
+    if( userVideoStreams.find(msg.userID) != userVideoStreams.end() ){
+      new_vs_id = userVideoStreams[msg.userID];
+    }  
+
+    downcall_route(src, UpdateRentMovieReply(msg.clientID, new_fe_id, new_rm_id, new_vs_id) );
+  }
+
+  upcall [Controller] deliver(const MaceKey& src, const MaceKey& dest, const UpdateReview& msg ) {
+    ADD_SELECTORS("MediaServiceServer");
+
+    uint32_t new_fe_id = 0;
+    uint32_t new_r_id = 0;
+    uint32_t new_rc_id = 0;
+
+    if( userFrontEnds.find(msg.userID) != userFrontEnds.end() ){
+      new_fe_id = userFrontEnds[msg.userID];
+    }
+
+    if( userReviews.find(msg.userID) != userReviews.end() ){
+      new_r_id = userReviews[msg.userID];
+    }
+
+    if( userReviewCheckers.find(msg.userID) != userReviewCheckers.end() ){
+      new_rc_id = userReviewCheckers[msg.userID];
+    }
+    downcall_route(src, UpdateReviewReply(msg.clientID, new_fe_id, new_r_id, new_rc_id) );
+  }
+
+  upcall [Controller] deliver(const MaceKey& src, const MaceKey& dest, const Leave& msg ) {
+    ADD_SELECTORS("MediaServiceServer");
+    maceout << "Rceive leave request from Client["<< msg.clientID <<"]User["<< msg.userID <<"]!" << Log::endl;
+
+    removeUser( msg.userID, frontEndUsers, userFrontEnds, MAX_USER_PER_FRONTEND, "FrontEnd");
+
+    if( msg.rmID > 0 ){
+      removeUser( msg.userID, rentMovieUsers, userRentMovies, MAX_USER_PER_RENTMOVIE, "RentMovie");
+      removeUser( msg.userID, videoStreamUsers, userVideoStreams, MAX_USER_PER_VIDEOSTREAM, "VideoStream");
+    } else {
+      removeUser( msg.userID, reviewUsers, userReviews, MAX_USER_PER_REVIEW, "Review");
+      removeUser( msg.userID, reviewCheckerUsers, userReviewCheckers, MAX_USER_PER_REVIEWCHECKER, "ReviewChecker");
+    }
+  }
+
+  
+
+////////////// FrontEnd ///////////////////////////////////////////////////////
+  async [FrontEnd<fe_id>] initFrontEnd(const uint32_t& fe_id){
+    ADD_SELECTORS("MediaServiceServer");
+    maceout << "Initialize FrontEnd["<< fe_id <<"]!" << Log::endl;
+    count = 0;
+  }
+
+  async [FrontEnd<fe_id>] updateFrontEndUsers( const uint32_t& fe_id, const mace::vector<uint32_t>& u_ids ) {
+    ADD_SELECTORS("MediaServiceServer");
+    userIDs = u_ids;
+    userIDSet.clear();
+
+    for(uint32_t i=0; i<userIDs.size(); i++ ){
+      userIDSet.insert( userIDs[i] );
+    }
+    maceout << "FrontEnd["<< fe_id <<"] serve users: " << userIDSet << Log::endl;
+  }
+
+  upcall [FrontEnd<msg.feID>] deliver(const MaceKey& src, const MaceKey& dest, const RentMovieMessage& msg ) {
+    ADD_SELECTORS("MediaServiceServer");
+    
+    if( userIDSet.count(msg.userID) == 0 ) {
+      maceout << "FrontEnd["<< msg.feID <<"] does not serve User["<< msg.userID <<"]!" << Log::endl;
+      downcall_route(src, RentMovieReply(msg.clientID, false));
+      return;
+    } 
+
+    count ++;
+    if( count % N_OUTPUT == 0 ){
+      maceout << "FrontEnd["<< msg.feID <<"] count=" << count << Log::endl;
+    }
+
+    async_rentMovie(msg.rmID, msg.userID, msg.vsID, src, msg.clientID);
+    // downcall_route(src, RentMovieReply(msg.clientID, true) );
+  } 
+
+  upcall [FrontEnd<msg.feID>] deliver(const MaceKey& src, const MaceKey& dest, const ReviewMessage& msg ) {
+    ADD_SELECTORS("MediaServiceServer");
+    if( userIDSet.count(msg.userID) == 0 ) {
+      maceout << "FrontEnt["<< msg.feID <<"] does not serve User[]!" << Log::endl;
+      downcall_route(src, ReviewReply(msg.clientID, false));
+      return;
+    } 
+
+    async_review(msg.rID, msg.userID, msg.rcID, src, msg.clientID);
+    // downcall_route( src, ReviewReply(msg.clientID, true) );
+  } 
+
+////////////// RentMovie ///////////////////////////////////////////////////////
+  async [RentMovie<rm_id>] initRentMovie(const uint32_t& rm_id){
+    ADD_SELECTORS("MediaServiceServer");
+    maceout << "Initialize RentMovie["<< rm_id <<"]!" << Log::endl;
+    count = 0;
+  }
+
+  async [RentMovie<rm_id>] updateRentMovieUsers( const uint32_t& rm_id, const mace::vector<uint32_t>& u_ids ) {
+    ADD_SELECTORS("MediaServiceServer");
+    userIDs = u_ids;
+    userIDSet.clear();
+
+    for(uint32_t i=0; i<userIDs.size(); i++ ){
+      userIDSet.insert( userIDs[i] );
+    }
+    maceout << "RentMovie["<< rm_id <<"] users: " << userIDs << Log::endl;
+  }
+
+  async [RentMovie<rm_id>] rentMovie(const uint32_t& rm_id, const uint32_t& u_id, const uint32_t& vs_id, const MaceKey& src, const uint32_t& client_id ) {
+    ADD_SELECTORS("MediaServiceServer");
+    
+    if( userIDSet.count(u_id) == 0 ) {
+      maceout << "RentMovie["<< rm_id <<"] does not serve User["<< u_id <<"]!" << Log::endl;
+      downcall_route(src, RentMovieReply(client_id, false));
+      return;
+    } 
+
+    count ++;
+    if( count % N_OUTPUT == 0 ){
+      maceout << "RentMovie["<< rm_id <<"] count=" << count << Log::endl;
+    }
+
+    async_watchMovie(vs_id, u_id, src, client_id);
+  }
+
+////////////// VideoStream ///////////////////////////////////////////////////////
+  async [VideoStream<vs_id>] initVideoStream(const uint32_t& vs_id){
+    ADD_SELECTORS("MediaServiceServer");
+    maceout << "Initialize VideoStream["<< vs_id <<"]!" << Log::endl;
+    count = 0;
+  }
+  
+  async [VideoStream<vs_id>] updateVideoStreamUsers( const uint32_t& vs_id, const mace::vector<uint32_t>& u_ids ) {
+    ADD_SELECTORS("MediaServiceServer");
+    userIDs = u_ids;
+    userIDSet.clear();
+
+    for(uint32_t i=0; i<userIDs.size(); i++ ){
+      userIDSet.insert( userIDs[i] );
+    }
+    maceout << "VideoStream["<< vs_id <<"] users: " << userIDs << Log::endl;
+  }
+
+  async [VideoStream<vs_id>] watchMovie(const uint32_t& vs_id, const uint32_t& u_id, const MaceKey& src, const uint32_t& client_id ) {
+    ADD_SELECTORS("MediaServiceServer");
+    if( userIDSet.count(u_id) == 0 ) {
+      maceout << "VideoStream["<< vs_id <<"] does not serve User["<< u_id <<"]!" << Log::endl;
+      downcall_route(src, RentMovieReply(client_id, false));
+      return;
+    } 
+
+    count ++;
+    if( count % N_OUTPUT == 0 ){
+      maceout << "VideoStream["<< vs_id <<"] count=" << count << Log::endl;
+    }
+
+    updateHistoryCounts[u_id] = 1;
+    doComputation(WM_INNER_LOOP, WM_OUTER_LOOP);
+    async_updateHistory( u_id, vs_id, src, client_id );
+  }
+
+  async [VideoStream<vs_id>] updateHistoryReply(const uint32_t& vs_id, const uint32_t& u_id, const MaceKey& src, const uint32_t& client_id ) {
+    ADD_SELECTORS("MediaServiceServer");
+    
+    updateHistoryCounts[u_id] ++;
+    if( updateHistoryCounts[u_id] >= N_UPDATE_HISTORY ){
+      updateHistoryCounts.erase(u_id);
+      downcall_route(src, RentMovieReply(client_id, true) );
+    } else {
+      doComputation(RM_INNER_LOOP, RM_OUTER_LOOP);
+      async_updateHistory( u_id, vs_id, src, client_id );
+    }
+  }
+
+////////////// UserInfo ///////////////////////////////////////////////////////
+  async [UserInfo<u_id>] initUserInfo(const uint32_t& u_id){
+    ADD_SELECTORS("MediaServiceServer");
+    maceout << "Initialize UserInfo["<< u_id <<"]!" << Log::endl;
+    count = 0;
+  }
+  
+  async [UserInfo<u_id>] updateHistory(const uint32_t& u_id, const uint32_t& vs_id, const MaceKey& src, const uint32_t& client_id ) {
+    ADD_SELECTORS("MediaServiceServer");
+
+    count ++;
+    if( count % N_OUTPUT == 0 ){
+      maceout << "UserInfo["<< u_id <<"] count=" << count << Log::endl;
+    }
+    async_updateHistoryReply( vs_id, u_id, src, client_id );
+  }
+
+
+
+////////////// Review ///////////////////////////////////////////////////////
+  async [Review<r_id>] initReview(const uint32_t& r_id){
+    ADD_SELECTORS("MediaServiceServer");
+    maceout << "Initialize Review["<< r_id <<"]!" << Log::endl;
+    count = 0;
+  }
+
+  async [Review<r_id>] updateReviewUsers( const uint32_t& r_id, const mace::vector<uint32_t>& u_ids ) {
+    ADD_SELECTORS("MediaServiceServer");
+    userIDs = u_ids;
+    userIDSet.clear();
+
+    for(uint32_t i=0; i<userIDs.size(); i++ ){
+      userIDSet.insert( userIDs[i] );
+    }
+
+    maceout << "Review["<< r_id <<"] users: " << userIDs << Log::endl;
+  }
+
+  async [Review<r_id>] review(const uint32_t& r_id, const uint32_t& u_id, const uint32_t& rc_id, const MaceKey& src, const uint32_t& client_id ) {
+    ADD_SELECTORS("MediaServiceServer");
+    if( userIDSet.count(u_id) == 0 ) {
+      downcall_route(src, ReviewReply(client_id, false));
+      return;
+    } 
+
+    count ++;
+    if( count % N_OUTPUT == 0 ){
+      maceout << "Review["<< r_id <<"] count=" << count << Log::endl;
+    }
+
+    movieReviewCounts[u_id] = 0;
+    async_getMovieReviews( r_id, u_id, rc_id, src, client_id );
+  }
+
+  async [Review<r_id>] replyMovieReviews(const uint32_t& r_id, const uint32_t& u_id, const uint32_t& rc_id, const MaceKey& src, const uint32_t& client_id ) {
+    ADD_SELECTORS("MediaServiceServer");
+    
+    movieReviewCounts[u_id] ++;
+    if( movieReviewCounts[u_id] >= N_GET_MOVIE_REVIEWS ){
+      movieReviewCounts.erase(u_id);
+      userReviewCounts[u_id] = 0;
+      async_updateUserReview( u_id, r_id, rc_id, src, client_id );
+    } else {
+      async_getMovieReviews( r_id, u_id, rc_id, src, client_id );
+    }
+  }
+
+  async [Review<r_id>] replyUpdateUserReview(const uint32_t& r_id, const uint32_t& u_id, const uint32_t& rc_id, const MaceKey& src, const uint32_t& client_id ) {
+    ADD_SELECTORS("MediaServiceServer");
+    
+    userReviewCounts[u_id] ++;
+    if( userReviewCounts[u_id] >= N_UPDATE_USER_REVIEW ){
+      userReviewCounts.erase(u_id);
+      async_submitUserReview( u_id, r_id, rc_id, src, client_id );
+    } else {
+      async_updateUserReview( u_id, r_id, rc_id, src, client_id );
+    }
+  }
+
+////////////// MovieReview ///////////////////////////////////////////////////////
+  async [MovieReview<mr_id>] initMovieReview(const uint32_t& mr_id){
+    ADD_SELECTORS("MediaServiceServer");
+    maceout << "Initialize MovieReview["<< mr_id <<"]!" << Log::endl;
+    count = 0;
+  }
+  
+
+  async [MovieReview<mr_id>] getMovieReviews(const uint32_t& mr_id, const uint32_t& u_id, const uint32_t& rc_id, const MaceKey& src, const uint32_t& client_id ) {
+    ADD_SELECTORS("MediaServiceServer");
+    
+    async_replyMovieReviews( mr_id, u_id, rc_id, src, client_id );
+  }
+
+////////////// UserReview ///////////////////////////////////////////////////////
+  async [UserReview<u_id>] initUserReview(const uint32_t& u_id){
+    ADD_SELECTORS("MediaServiceServer");
+    maceout << "Initialize UserReview["<< u_id <<"]!" << Log::endl;
+    count = 0;
+  }
+  
+  async [UserReview<ur_id>] updateUserReview(const uint32_t& ur_id, const uint32_t& r_id, const uint32_t& rc_id, const MaceKey& src, const uint32_t& client_id ) {
+    ADD_SELECTORS("MediaServiceServer");
+
+    count ++;
+    if( count % N_OUTPUT == 0 ){
+      maceout << "UserReview["<< ur_id <<"] count=" << count << Log::endl;
+    }
+    
+    async_replyUpdateUserReview( r_id, ur_id, rc_id, src, client_id );
+  }
+
+  async [UserReview<ur_id>] submitUserReview(const uint32_t& ur_id, const uint32_t& r_id, const uint32_t& rc_id, const MaceKey& src, const uint32_t& client_id ) {
+    ADD_SELECTORS("MediaServiceServer");
+    
+    async_checkUserReview( rc_id, ur_id, src, client_id );
+  }
+
+////////////// ReviewChecker ///////////////////////////////////////////////////////
+  async [ReviewChecker<rc_id>] initReviewChecker(const uint32_t& rc_id){
+    ADD_SELECTORS("MediaServiceServer");
+    maceout << "Initialize ReviewChecker["<< rc_id <<"]!" << Log::endl;
+    count = 0;
+  }
+
+  async [ReviewChecker<rc_id>] updateReviewCheckerUsers( const uint32_t& rc_id, const mace::vector<uint32_t>& u_ids ) {
+    ADD_SELECTORS("MediaServiceServer");
+    userIDs = u_ids;
+    userIDSet.clear();
+
+    for(uint32_t i=0; i<userIDs.size(); i++ ){
+      userIDSet.insert( userIDs[i] );
+    }
+    maceout << "ReviewChecker["<< rc_id <<"] users: " << userIDs << Log::endl;
+  }  
+
+  async [ReviewChecker<rc_id>] checkUserReview(const uint32_t& rc_id, const uint32_t& u_id, const MaceKey& src, const uint32_t& client_id ) {
+    ADD_SELECTORS("MediaServiceServer");
+    if( userIDSet.count(u_id) == 0 ) {
+      downcall_route(src, ReviewReply(client_id, false));
+      return;
+    } 
+
+    count ++;
+    if( count % N_OUTPUT == 0 ){
+      maceout << "ReviewChecker["<< rc_id <<"] count=" << count << Log::endl;
+    }
+
+    doComputation(RM_INNER_LOOP, RM_OUTER_LOOP);
+    downcall_route(src, ReviewReply(client_id, true));
+  }
+
+}
+
+routines {
+
+  [__null] uint32_t assignUser( const uint32_t& u_id, mace::map<uint32_t, mace::vector<uint32_t> >& existing_u_ids, mace::map<uint32_t, uint32_t>& user_actors, uint32_t& next_actor_id, 
+      const uint32_t& max_n_user ) {    
+    ADD_SELECTORS("MediaServiceServer");
+
+    uint32_t assigned = 0;
+    
+    if( user_actors.find(u_id) != user_actors.end() ){
+      assigned = user_actors[ u_id ];
+    } else {
+      uint32_t min_actor_id = 0;
+      uint32_t min_workload = 0;
+      for( mace::map< uint32_t, mace::vector<uint32_t> >::iterator iter = existing_u_ids.begin(); iter != existing_u_ids.end(); iter ++) {
+        if( (iter->second).size() >= max_n_user ) {
+          continue;
+        }
+
+        if( min_actor_id == 0 ){
+          min_actor_id = iter->first;
+          min_workload = (iter->second).size();
+        } else {
+          if( min_workload > (iter->second).size() ){
+            min_actor_id = iter->first;
+            min_workload = (iter->second).size();
+          }
+        }
+      }
+
+      if( min_actor_id == 0 ) { 
+        min_actor_id = getNextActorID( next_actor_id, existing_u_ids );
+      } 
+
+      assigned = min_actor_id;
+
+      existing_u_ids[min_actor_id].push_back(u_id);
+      user_actors[u_id] = min_actor_id;
+    }    
+    return assigned;
+  }
+
+
+
+  [__null] uint32_t getNextActorID( uint32_t& next_actor_id, mace::map< uint32_t, mace::vector<uint32_t> >& existing_u_ids ){
+    if( next_actor_id-1 == existing_u_ids.size() ) {
+      uint32_t new_actor_id = next_actor_id ++;
+      return new_actor_id;
+    } else if( existing_u_ids.size() < next_actor_id-1 ) {
+      for(uint32_t i=1; i<next_actor_id; i++ ){
+        if( existing_u_ids.find(i) == existing_u_ids.end() ){
+          return i;
+        }
+      }
+    }
+
+    ASSERT(false);
+    return 0;
+  }
+
+  [__null] void updateAssignment( const mace::map< uint32_t, mace::vector<uint32_t> >& existing_u_ids, const mace::string& actor_type ){
+    for( mace::map< uint32_t, mace::vector<uint32_t> >::const_iterator iter = existing_u_ids.begin(); iter != existing_u_ids.end(); iter ++ ){
+      if( actor_type == "FrontEnd" ){
+        async_updateFrontEndUsers( iter->first, iter->second );
+      } else if( actor_type == "RentMovie" ){
+        async_updateRentMovieUsers( iter->first, iter->second );
+      } else if( actor_type == "VideoStream" ){
+        async_updateVideoStreamUsers( iter->first, iter->second );
+      } else if( actor_type == "Review" ){
+        async_updateReviewUsers( iter->first, iter->second );
+      } else if( actor_type == "ReviewChecker" ){
+        async_updateReviewCheckerUsers( iter->first, iter->second );
+      }
+    }
+  }
+
+  [__null] void removeUser( const uint32_t& u_id, mace::map< uint32_t, mace::vector<uint32_t> >& existing_u_ids, mace::map<uint32_t, uint32_t>& user_actors, 
+      const uint32_t& max_n_user, const mace::string& actor_type ) {
+    
+    ADD_SELECTORS("MediaServiceServer");
+
+    if( user_actors.find(u_id) == user_actors.end() ){
+      return;
+    }
+      
+    uint32_t actor_id = user_actors[u_id];
+    user_actors.erase(actor_id);
+
+    mace::vector<uint32_t>& u_ids = existing_u_ids[actor_id];
+
+    for(mace::vector<uint32_t>::iterator iter = u_ids.begin(); iter != u_ids.end(); iter ++ ){
+      if( *iter == u_id ){
+        u_ids.erase(iter);
+        break;
+      }
+    }
+
+    if( u_ids.size() <= max_n_user/2 ){
+      mace::map<uint32_t, mace::vector<uint32_t> >::iterator iter = existing_u_ids.begin();
+      uint32_t i = 0;
+      while( i<u_ids.size() && iter != existing_u_ids.end() ) {
+        while( (iter->second).size() < max_n_user && i<u_ids.size() ){
+          (iter->second).push_back( u_ids[i] );
+          user_actors[ u_ids[i] ] = iter->first;
+          i ++;
+        }
+
+        if( i<u_ids.size() ){
+          iter ++;
+        } else {
+          break;
+        }
+      }
+
+      if( i < u_ids.size() ) {
+        mace::vector<uint32_t> new_u_ids;
+        for(; i<u_ids.size(); i++ ){
+          new_u_ids.push_back( u_ids[i] );
+        }
+        existing_u_ids[ actor_id ] = new_u_ids;
+      } else {
+        existing_u_ids.erase(actor_id);
+      }
+    }
+
+    updateAssignment( existing_u_ids, actor_type );
+  }
+
+  [__null] void doComputation(const uint32_t& inner_loop, const uint32_t outer_loop) {
+    
+    uint64_t m = 0;
+
+    for( uint32_t i=0; i<outer_loop; i++ ){
+      m = RandomUtil::randInt(i);
+      for( uint32_t j=0; j<inner_loop; j++ ){
+        m ++;
+      }
+    }
+    
+  }
+
+}
+

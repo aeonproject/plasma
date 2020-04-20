@@ -1,0 +1,30 @@
+//CK: Suggest putting comments in this file to indicate what each message is for, and who sends it.
+messages {
+  AccessFile {
+  	uint32_t clientId;
+    uint32_t dirId;
+  }
+
+  AccessFileReply {
+    uint32_t clientId;
+  }
+
+  AccessDir {
+    uint32_t clientId;
+    uint32_t dirId;
+  }
+
+  AccessDirReply {
+    uint32_t clientId;
+  }
+
+ 
+  ConnectionRequest {
+    uint32_t clientId;
+  }
+
+  ConnectionSetup {
+    uint32_t clientId;
+    MaceKey proxyAddr;
+  }
+}
